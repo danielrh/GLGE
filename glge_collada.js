@@ -36,7 +36,7 @@ GLGE.Collada=function(){
 	this.objects=[];
 };
 GLGE.augment(GLGE.Group,GLGE.Collada);
-
+GLGE.Collada.prototype.type=GLGE.G_NODE;
 /**
 * function to get the element with a specified id
 * @param {string} id the id of the element
@@ -82,6 +82,7 @@ GLGE.Collada.prototype.parseArray=function(node){
 GLGE.Collada.prototype.setDocument=function(url){
 	var req = new XMLHttpRequest();
 	if(req) {
+		req.overrideMimeType("text/xml")
 		req.docurl=url;
 		req.docObj=this;
 		req.onreadystatechange = function() {
@@ -414,6 +415,100 @@ GLGE.Collada.prototype.getInstanceGeometry=function(node){
 	}
 	//create GLGE object
 	var obj=new GLGE.Object();
+
+	/// dbm: temp fix: climb up parent heirarchy to root
+	obj.setLocX = function(value){
+		var o = this
+		while (o.parent) o = o.parent
+		o.setLocX(value)
+	}
+	obj.setLocY = function(value){
+		var o = this
+		while (o.parent) o = o.parent
+		o.setLocY(value)
+	}
+	obj.setLocZ = function(value){
+		var o = this
+		while (o.parent) o = o.parent
+		o.setLocZ(value)
+	}
+	obj.getLocX=function(){
+		var o = this
+		while (o.parent) o = o.parent
+		return o.getLocX()
+	}
+	obj.getLocY=function(){
+		var o = this
+		while (o.parent) o = o.parent
+		return o.getLocY()
+	}
+	obj.getLocZ=function(){
+		var o = this
+		while (o.parent) o = o.parent
+		return o.getLocZ()
+	}
+	obj.setRotX = function(value){
+		var o = this
+		while (o.parent) o = o.parent
+		o.setRotX(value)
+	}
+	obj.setRotY = function(value){
+		var o = this
+		while (o.parent) o = o.parent
+		o.setRotY(value)
+	}
+	obj.setRotZ = function(value){
+		var o = this
+		while (o.parent) o = o.parent
+		o.setRotZ(value)
+	}
+	obj.getRotX=function(){
+		var o = this
+		while (o.parent) o = o.parent
+		return o.getRotX()
+	}
+	obj.getRotY=function(){
+		var o = this
+		while (o.parent) o = o.parent
+		return o.getRotY()
+	}
+	obj.getRotZ=function(){
+		var o = this
+		while (o.parent) o = o.parent
+		return o.getRotZ()
+	}
+
+	obj.setScaleX = function(value){
+		var o = this
+		while (o.parent) o = o.parent
+		o.setScaleX(value)
+	}
+	obj.setScaleY = function(value){
+		var o = this
+		while (o.parent) o = o.parent
+		o.setScaleY(value)
+	}
+	obj.setScaleZ = function(value){
+		var o = this
+		while (o.parent) o = o.parent
+		o.setScaleZ(value)
+	}
+	obj.getScaleX=function(){
+		var o = this
+		while (o.parent) o = o.parent
+		return o.getScaleX()
+	}
+	obj.getScaleY=function(){
+		var o = this
+		while (o.parent) o = o.parent
+		return o.getScaleY()
+	}
+	obj.getScaleZ=function(){
+		var o = this
+		while (o.parent) o = o.parent
+		return o.getScaleZ()
+	}
+
 	for(i=0; i<meshes.length;i++){
 		if(objMaterials[meshes[i].matName].trans){
 			obj.setZtransparent(true);
