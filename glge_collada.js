@@ -416,6 +416,14 @@ GLGE.Collada.prototype.getInstanceGeometry=function(node){
 	//create GLGE object
 	var obj=new GLGE.Object();
 
+	// kluge to make id = document name until GLGE fix, and other crap
+	var s,i,j
+	s = this.xml.documentURI
+	i = s.lastIndexOf("/")+1
+	j = s.lastIndexOf(".")
+	s = s.slice(i,j)
+	obj.id = s
+
 	/// dbm: temp fix: climb up parent heirarchy to root
 	obj.setLocX = function(value){
 		var o = this
