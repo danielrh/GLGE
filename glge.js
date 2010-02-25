@@ -689,6 +689,34 @@ GLGE.Placeable.prototype.rotOrder=GLGE.ROT_XYZ;
 GLGE.Placeable.prototype.lookAt=null;
 GLGE.Placeable.prototype.mode=GLGE.P_EULER;
 /**
+* Gets the root node object
+* @returns {object}
+*/
+GLGE.Placeable.prototype.getRoot=function(){
+	if(this.type==GLGE.G_ROOT){
+		return this;
+	}else if(this.parent){
+		var value=this.parent.getRoot();
+		if(!value) return this;
+			else return value;
+	}else{
+		return this;
+	}
+}
+/**
+* Gets the id string of this text
+* @returns {string}
+*/
+GLGE.Placeable.prototype.getRef=function(){
+	if(this.id){
+		return this.id;
+	}else if(this.parent){
+		return this.parent.getRef();
+	}else{
+		return null;
+	}
+}
+/**
 * gets the object or poisition being looking at
 * @param {array|object} value the location/object
 */
