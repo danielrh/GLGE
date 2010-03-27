@@ -2729,7 +2729,7 @@ GLGE.Object.prototype.GLUniforms=function(gl,renderType){
 		
 		lpos=camMat.x(this.scene.lights[i].getModelMatrix()).x([0,0,1]);
 		gl.uniform3f(GLGE.getUniformLocation(gl,program, "lightdir"+i),lpos.e(1)-pos.e(1),lpos.e(2)-pos.e(2),lpos.e(3)-pos.e(3));
-		gl.uniformMatrix4fv(GLGE.getUniformLocation(gl,program, "lightmat"+i), false, this.scene.lights[i].getModelMatrix().inverse().x(this.getModelMatrix()).glData());
+		//gl.uniformMatrix4fv(GLGE.getUniformLocation(gl,program, "lightmat"+i), false, this.scene.lights[i].getModelMatrix().inverse().x(this.getModelMatrix()).glData());
 	}
        
 	//set bone transforms
