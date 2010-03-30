@@ -3735,12 +3735,12 @@ GLGE.Scene.prototype.getRoots=function(){
     var roots=[];
     for(var i=0; i<this.objects.length;i++){
         if(!this.objects[i].parent){
-            roots.push(object[i]);
+            roots.push(this.objects[i]);
         }
     }
     for(var i=0; i<this.groups.length;i++){
-        if(!this.groups[i].parent || this.groups.parent.type==GLGE.G_ROOT){
-            roots.push(groups[i]);
+        if(!this.groups[i].parent || this.groups[i].parent.type==GLGE.G_ROOT){
+            roots.push(this.groups[i]);
         }
     }
     return roots;
