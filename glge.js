@@ -2719,7 +2719,7 @@ GLGE.Object.prototype.GLUniforms=function(gl,renderType){
 	var normalMatrix = mvMatrix.inverse();
 	normalMatrix = normalMatrix.transpose();
 	var nUniform = GLGE.getUniformLocation(gl,program, "uNMatrix");
-	gl.uniformMatrix4fv(nUniform, false, normalMatrix.glData());
+	//gl.uniformMatrix4fv(nUniform, false, normalMatrix.glData());
     
 	//light
 	var pos,lpos;
