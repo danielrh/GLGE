@@ -2719,17 +2719,23 @@ GLGE.Object.prototype.GLUniforms=function(gl,renderType){
 	var normalMatrix = mvMatrix.inverse();
 	normalMatrix = normalMatrix.transpose();
 	var nUniform = GLGE.getUniformLocation(gl,program, "uNMatrix");
-	//gl.uniformMatrix4fv(nUniform, false, normalMatrix.glData());
+	try {
+		gl.uniformMatrix4fv(nUniform, false, normalMatrix.glData());
+	}
+	catch(e) {}
     
 	//light
 	var pos,lpos;
-	for(var i=0; i<this.scene.lights.length;i++){
-		pos=camMat.x(this.scene.lights[i].getModelMatrix()).x([0,0,0]);
-		gl.uniform3f(GLGE.getUniformLocation(gl,program, "lightpos"+i), pos.e(1),pos.e(2),pos.e(3));		
+	for (var i = 0; i < this.scene.lights.length; i++) {
+		pos = camMat.x(this.scene.lights[i].getModelMatrix()).x([0, 0, 0]);
+		gl.uniform3f(GLGE.getUniformLocation(gl, program, "lightpos" + i), pos.e(1), pos.e(2), pos.e(3));
 		
-		lpos=camMat.x(this.scene.lights[i].getModelMatrix()).x([0,0,1]);
-		gl.uniform3f(GLGE.getUniformLocation(gl,program, "lightdir"+i),lpos.e(1)-pos.e(1),lpos.e(2)-pos.e(2),lpos.e(3)-pos.e(3));
-		//gl.uniformMatrix4fv(GLGE.getUniformLocation(gl,program, "lightmat"+i), false, this.scene.lights[i].getModelMatrix().inverse().x(this.getModelMatrix()).glData());
+		lpos = camMat.x(this.scene.lights[i].getModelMatrix()).x([0, 0, 1]);
+		gl.uniform3f(GLGE.getUniformLocation(gl, program, "lightdir" + i), lpos.e(1) - pos.e(1), lpos.e(2) - pos.e(2), lpos.e(3) - pos.e(3));
+		try {
+			gl.uniformMatrix4fv(GLGE.getUniformLocation(gl, program, "lightmat" + i), false, this.scene.lights[i].getModelMatrix().inverse().x(this.getModelMatrix()).glData());
+		} 
+		catch (e) {}
 	}
        
 	//set bone transforms
