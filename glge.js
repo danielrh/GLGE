@@ -5082,7 +5082,9 @@ GLGE.Material.prototype.textureUniforms=function(gl,shaderProgram,lights){
 		if(this.layers[i].animation) this.layers[i].animate();
 		scale=this.layers[i].getScale();
 		offset=this.layers[i].getOffset();		
-		gl.uniformMatrix4fv(GLGE.getUniformLocation(gl,shaderProgram, "layer"+i+"Matrix"), false, this.layers[i].getMatrix().glData());
+		try {
+			gl.uniformMatrix4fv(GLGE.getUniformLocation(gl, shaderProgram, "layer" + i + "Matrix"), false, this.layers[i].getMatrix().glData());
+		} catch(e) {}
 	}
     
 
