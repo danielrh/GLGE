@@ -64,6 +64,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 
+
 /**
 * @constant 
 * @description Enumeration for TRUE
@@ -164,7 +165,7 @@ GLGE.Assets.unregisterAsset=function(uid){
 /**
 * @function finds an asset by uid
 */
-GLGE.Assets.get=function(uuid){
+GLGE.Assets.get=function(uid){
 	var value=GLGE.Assets.assets[uid];
 	if(value){
 		return value;
@@ -172,6 +173,77 @@ GLGE.Assets.get=function(uuid){
 		return false;
 	}
 }
+
+/**
+* @namespace GLGE Messaging System
+*/
+GLGE.Message={};
+/**
+* @function parses messages and updates the scene graph
+*/
+GLGE.Message.parseMessage=function(msg){
+	switch(msg.command){
+		case "create":
+			var obj=new GLGE[msg.type](msg.uid);
+			this.setAttributes(obj,msg.attributes);
+			if(msg.children) GLGE.Message.addChildren(obj,msg.children);
+			return obj;
+			break;
+		case "update":
+			var obj=GLGE.Assets.get(msg.uid);
+			this.setAttributes(obj,msg.attributes);
+			if(msg.add) GLGE.Message.addChildren(obj,msg.add);
+			if(msg.remove) GLGE.Message.removeChildren(obj,msg.remove);
+			return obj;
+			break;
+	}
+	return null;
+}
+/**
+* @function parses the attributes from a message
+* @private
+*/
+GLGE.Message.setAttributes=function(obj,attribs){
+	if(attribs){
+		for(var attrib in attribs){
+			if(obj["set"+attrib]){
+				//check to see if the attribute has to be parsed as a message
+				if(attribs[attrib].command){
+					attribs[attrib]=GLGE.Message.parseMessage(attribs[attrib]);
+				}
+				obj["set"+attrib](attribs[attrib]);
+			}
+		}
+	}
+	return null;
+}
+/**
+* @function parses the children to add
+* @private
+*/
+GLGE.Message.addChildren=function(obj,children){
+	if(!(children instanceof Array)) children=[children];
+	for(var i=0;i<children.length;i++){
+		if(children[i].command){
+			var asset=GLGE.Message.parseMessage(children[i]);
+		}else{
+			var asset=GLGE.Assets.get(children[i]);
+		}
+		obj["add"+asset.className](asset);
+	}
+}
+/**
+* @function parses the children to remove
+* @private
+*/
+GLGE.Message.removeChildren=function(obj,children){
+	if(!(children instanceof Array)) children=[children];
+	for(var i=0;i<children.length;i++){
+		var asset=GLGE.Assets.get(children[i]);
+		obj["add"+asset.className](asset);
+	}
+}
+
 
 /**
 * function to cache the uniform locations
@@ -182,8 +254,10 @@ GLGE.Assets.get=function(uuid){
 */
 GLGE.getUniformLocation=function(gl,program, uniform){
 	if(!program.uniformCache) program.uniformCache={};
-	if(!program.uniformCache[uniform]){
+	if(!program.uniformChecked) program.uniformChecked={};
+	if(!program.uniformChecked[uniform]){
 		program.uniformCache[uniform]=gl.getUniformLocation(program, uniform);
+		program.uniformChecked[uniform]=true;
 	}
 	return program.uniformCache[uniform];
 };
@@ -463,6 +537,12 @@ GLGE.Document.prototype.setProperties=function(Obj){
 			}
 		}
 		if(Obj.object[set_method]) Obj.object[set_method](value);
+		//if a uid is set in the xml doc then make sure it's registered correctly in the assets
+		if(Obj.attributes[i].nodeName=="uid"){
+			GLGE.Assets.unregisterAsset(Obj.object.uid);
+			Obj.object.uid=Obj.attributes[i].value;
+			GLGE.Assets.registerAsset(Obj.object,Obj.attributes[i].value);
+		}
 	}
 }
 /**
@@ -540,7 +620,10 @@ GLGE.Document.prototype.getDefault=function(ele){
 GLGE.Document.prototype.getTexture=function(ele){
 	if(!ele.object){
 		var rel=this.getAbsolutePath(this.rootURL,null);
-		ele.object=new GLGE.Texture(this.getAbsolutePath(ele.getAttribute("src"),rel));
+		ele.object=new GLGE.Texture();
+		ele.object.setSrc(this.getAbsolutePath(ele.getAttribute("src"),rel));
+		ele.removeAttribute("src");
+		this.setProperties(ele);
 	}
 	return ele.object;
 }
@@ -564,48 +647,7 @@ GLGE.Document.prototype.parseArray=function(node){
 	}
 	return output;
 }
-/**
-* Parses the skeleton to create the object
-* @param {domelement} ele the element to create the skeleton
-* @private
-*/
-GLGE.Document.prototype.getSkeleton=function(ele){
-	if(!ele.object){
-		ele.object=new GLGE.Skeleton();
-		this.setProperties(ele);
-		var child=ele.firstChild;
-		while(child){
-			switch(child.tagName){
-				case "bone":
-					ele.object.addBone(new GLGE.Bone(child.getAttribute("channel"),child.getAttribute("x"),child.getAttribute("y"),child.getAttribute("z")),child.getAttribute("parent"));
-					break;
-			}
-			child=child.nextSibling;
-		}
-	}
-	return ele.object;
-}
-/**
-* Parses the skeletal animation to create the object
-* @param {domelement} ele the element to create the skeletal animation from
-* @private
-*/
-GLGE.Document.prototype.getSkeletalAction=function(ele){
-	if(!ele.object){
-		ele.object=new GLGE.SkeletalAction(ele.getAttribute("frames"));
-		this.setProperties(ele);
-		var child=ele.firstChild;
-		while(child){
-			switch(child.tagName){
-				case "animation":
-					ele.object.addAnimationVector(child.getAttribute("channel"),this.getElement(child.getAttribute("vector").substr(1)));
-					break;
-			}
-			child=child.nextSibling;
-		}
-	}
-	return ele.object;
-}
+
 /**
 * Parses the mesh dom to create the mesh object
 * @param {domelement} ele the element to create the mesh from
@@ -615,7 +657,7 @@ GLGE.Document.prototype.getMesh=function(ele){
 	if(!ele.object){
 		ele.object=new GLGE.Mesh();
 		this.setProperties(ele);
-		child=ele.firstChild;
+		var child=ele.firstChild;
 		while(child){
 			switch(child.tagName){
 				case "positions":
@@ -633,8 +675,27 @@ GLGE.Document.prototype.getMesh=function(ele){
 				case "faces":
 					ele.object.setFaces(this.parseArray(child));
 					break;
+				case "joint_names":
+					var names=this.parseArray(child);
+					var jointObjects=[];
+					for(var i=0;i<names.length;i++){
+						jointObjects.push(this.getElement(names[i].substr(1)));
+					}
+					ele.object.setJoints(jointObjects);
+					break;
+				case "bind_matrix":
+					var mats=this.parseArray(child);
+					var invBind=[];
+					for(var i=0;i<mats.length;i++){
+						invBind.push(GLGE.Mat4(mats[i].split(" ")));
+					}
+					ele.object.setInvBindMatrix(invBind);
+					break;
+				case "joints":
+					ele.object.setVertexJoints(this.parseArray(child),child.getAttribute("count"));
+					break;
 				case "weights":
-					ele.object.addBoneWeights(child.getAttribute("channel"),this.parseArray(child));
+					ele.object.setVertexWeights(this.parseArray(child),child.getAttribute("count"));
 					break;
 			}
 			child=child.nextSibling;
@@ -666,7 +727,10 @@ GLGE.Document.prototype.getAnimationVector=function(ele){
 					linears=child.getElementsByTagName("linear_point");
 					for(var i=0; i<linears.length;i++){
 						point=linears[i].firstChild.nodeValue.split(",");
-						curve.addPoint(new GLGE.LinearPoint(point[0],point[1]));
+						var linearPoint=new GLGE.LinearPoint();
+						linearPoint.setX(point[0]);
+						linearPoint.setY(point[1]);
+						curve.addPoint(linearPoint);
 					}
 					linears=child.getElementsByTagName("step_point");
 					for(var i=0; i<linears.length;i++){
@@ -808,11 +872,11 @@ GLGE.Placeable.prototype.Lookat=function(value){
 		objpos={x:value[0],y:value[1],z:value[2]};
 	}
 	
-	var coord=new GLGE.Vec([pos.x-objpos.x,pos.y-objpos.y,pos.z-objpos.z]);
+	var coord=GLGE.Vec3([pos.x-objpos.x,pos.y-objpos.y,pos.z-objpos.z]);
 	var zvec=coord.toUnitVector();
-	var xvec=(new GLGE.Vec([0,0,1])).cross(zvec).toUnitVector();
+	var xvec=(GLGE.Vec3([0,0,1])).cross(zvec).toUnitVector();
 	var yvec=zvec.cross(xvec).toUnitVector();		
-	this.setRotMatrix(new GLGE.Mat([xvec.e(1), yvec.e(1), zvec.e(1), 0,
+	this.setRotMatrix(GLGE.Mat4([xvec.e(1), yvec.e(1), zvec.e(1), 0,
 					xvec.e(2), yvec.e(2), zvec.e(2), 0,
 					xvec.e(3), yvec.e(3), zvec.e(3), 0,
 					0, 0, 0, 1]));
@@ -841,7 +905,7 @@ GLGE.Placeable.prototype.getRotMatrix=function(){
 	if(!this.rotmatrix){
 		var rotation=this.getRotation();
 		if(this.mode==GLGE.P_EULER) this.rotmatrix=GLGE.rotateMatrix(rotation.x,rotation.y,rotation.z,this.rotOrder);
-		if(this.mode==GLGE.P_QUAT) this.rotmatrix=GLGE.quatRotation(rotation.x,rotation.y,rotation.z,rotation.w);
+		if(this.mode==GLGE.P_QUAT)	this.rotmatrix=GLGE.quatRotation(rotation.x,rotation.y,rotation.z,rotation.w);
 	}
 	return this.rotmatrix;
 }
@@ -851,8 +915,8 @@ GLGE.Placeable.prototype.getRotMatrix=function(){
 */
 GLGE.Placeable.prototype.setRotMatrix=function(matrix){
 	this.mode=GLGE.P_MATRIX;
-	this.matrix=null;
 	this.rotmatrix=matrix;
+	this.updateMatrix();
 }
 /**
 * Sets the x location of the object
@@ -1172,6 +1236,11 @@ GLGE.Placeable.prototype.getScale=function(){
 */
 GLGE.Placeable.prototype.updateMatrix=function(){
 	this.matrix=null;
+	if(this.children){
+		for(var i=0;i<this.children.length;i++){
+			this.children[i].updateMatrix();
+		}
+	}
 }
 /**
 * Gets the model matrix to transform the model within the world
@@ -1180,11 +1249,12 @@ GLGE.Placeable.prototype.getModelMatrix=function(){
 	if(!this.matrix){
 		var position=this.getPosition();
 		var scale=this.getScale();
-		this.matrix=GLGE.translateMatrix(position.x,position.y,position.z).x(this.getRotMatrix().x(GLGE.scaleMatrix(scale.x,scale.y,scale.z)));
+		//REMOVEvar matrix=GLGE.translateMatrix(position.x,position.y,position.z).x(this.getRotMatrix().x(GLGE.scaleMatrix(scale.x,scale.y,scale.z)));
+		var matrix=GLGE.mulMat4(GLGE.translateMatrix(position.x,position.y,position.z),GLGE.mulMat4(this.getRotMatrix(),GLGE.scaleMatrix(scale.x,scale.y,scale.z)));
+		if(this.parent) matrix=GLGE.mulMat4(this.parent.getModelMatrix(),matrix);
+		this.matrix=matrix;
 	}
-	var matrix=this.matrix;
-	if(this.parent) matrix=this.parent.getModelMatrix().x(matrix);
-	return matrix;
+	return this.matrix;
 }
 
 /**
@@ -1194,17 +1264,20 @@ GLGE.Animatable=function(){
 }
 GLGE.Animatable.prototype.animationStart=null;
 GLGE.Animatable.prototype.animation=null;
+GLGE.Animatable.prototype.blendStart=0;
+GLGE.Animatable.prototype.blendTime=0;
 GLGE.Animatable.prototype.lastFrame=null;
 GLGE.Animatable.prototype.frameRate=25;
 GLGE.Animatable.prototype.loop=GLGE.TRUE;
 GLGE.Animatable.prototype.paused=GLGE.FALSE;
 GLGE.Animatable.prototype.pausedTime=null;
+ 
 /**
 * update animated properties on this object
 */
-GLGE.Animatable.prototype.animate=function(){
-	if(!this.paused){
-		var now=parseInt(new Date().getTime());
+GLGE.Animatable.prototype.animate=function(now){
+	if(!this.paused && this.animation){
+		if(!now) now=parseInt(new Date().getTime());
 		if(this.animation.frames>1){
 			if(this.loop){
 				frame=((parseFloat(now)-parseFloat(this.animationStart))/1000*this.frameRate)%(this.animation.frames-1)+1; 
@@ -1215,10 +1288,54 @@ GLGE.Animatable.prototype.animate=function(){
 		}else{
 			frame=1;
 		}
+		frame=Math.round(frame);
 		if(frame!=this.lastFrame){
 			this.lastFrame=frame;
-			for(property in this.animation.curves){
-				if(this["set"+property]) this["set"+property](this.animation.curves[property].getValue(parseFloat(frame)));
+			if(this.blendTime==0){
+				if(!this.animationCache[frame]){
+					this.animationCache[frame]=[];
+					for(property in this.animation.curves){
+						if(this["set"+property]){
+							switch(property){
+								case "QuatX":
+								case "QuatY":
+								case "QuatZ":
+								case "QuatW":
+								case "RotX":
+								case "RotY":
+								case "RotZ":
+										var rot=true;
+									break;
+								default:
+									var value=this.animation.curves[property].getValue(parseFloat(frame));
+									this.animationCache[frame].push({property:property,value:value});
+									break;
+							}
+							this["set"+property](this.animation.curves[property].getValue(parseFloat(frame)));
+						}	
+					}
+					if(rot){
+						value=this.getRotMatrix();
+						this.animationCache[frame].push({property:"RotMatrix",value:value});
+					}
+				}else{
+					var cache=this.animationCache[frame];
+					for(var i=0;i<cache.length;i++){
+						if(this["set"+cache[i].property]) this["set"+cache[i].property](cache[i].value);
+					}
+				}
+				
+				
+			}else{
+				var blendfactor=0;
+				//still to do do the blending here!
+			}
+		}
+	}
+	if(this.children){
+		for(var i=0; i<this.children.length;i++){
+			if(this.children[i].animate){
+				this.children[i].animate(now);
 			}
 		}
 	}
@@ -1226,9 +1343,19 @@ GLGE.Animatable.prototype.animate=function(){
 /**
 * Sets the animation vector of this object
 * @param {GLGE.AnimationVector} animationVector the animation to apply to this object
+* @param {number} blendDuration [Optional] the time in milliseconds to blend into this animation
+* @param {number} starttime [Optional] the starting time of the animation
 */
-GLGE.Animatable.prototype.setAnimation=function(animationVector){
-	this.animationStart=parseInt(new Date().getTime());
+GLGE.Animatable.prototype.setAnimation=function(animationVector,blendDuration,starttime){
+	this.animationCache=[];
+	if(!blendDuration) blendDuration=0;
+	if(blendDuration>0 && this.animation){
+		this.oldAnimation=this.animation;
+		this.blendStart=parseInt(new Date().getTime());
+		this.blendTime=blendDuration;
+	}
+	if(starttime) this.animationStart=starttime;
+		else	this.animationStart=parseInt(new Date().getTime());
 	this.animation=animationVector;
 }
 /**
@@ -1270,7 +1397,7 @@ GLGE.Animatable.prototype.getLoop=function(){
 * @function is looping? @see GLGE.Animatable#getLoop
 */
 GLGE.Animatable.prototype.isLooping=GLGE.Animatable.prototype.getLoop;
-
+ 
 /**
 * Sets the paused flag to GLGE.TRUE or GLGE.FALSE
 * @param  {boolean} value 
@@ -1300,31 +1427,79 @@ GLGE.Animatable.prototype.togglePaused=function(){
 
 /**
 * @class A bezier class to add points to the Animation Curve 
-* @param {number} x1 x-coord of the first control point
-* @param {number} y1 y-coord of the first control point
-* @param {number} x2 x-coord of the second control point
-* @param {number} y2 y-coord of the second control point
-* @param {number} x3 x-coord of the third control point
-* @param {number} y3 y-coord of the third control point
+* @param {string} uid a unique string to identify this object
 */
-GLGE.BezTriple=function(x1,y1,x2,y2,x3,y3){
-	this.x1=parseFloat(x1);
-	this.y1=parseFloat(y1);
-	this.x=parseFloat(x2);
-	this.y=parseFloat(y2);
-	this.x3=parseFloat(x3);
-	this.y3=parseFloat(y3);
+GLGE.BezTriple=function(uid){
+	GLGE.Assets.registerAsset(this,uid);
 };
+GLGE.BezTriple.prototype.className="BezTriple";
+/**
+* set the x1-coord
+* @param {number} x x1-coord control point
+*/
+GLGE.BezTriple.prototype.setX1=function(x){
+	this.x1=parseFloat(x);
+};
+/**
+* set the y1-coord
+* @param {number} y y1-coord control point
+*/
+GLGE.BezTriple.prototype.setY1=function(y){
+	this.y1=parseFloat(y);
+};
+/**
+* set the x2-coord
+* @param {number} x x2-coord control point
+*/
+GLGE.BezTriple.prototype.setX2=function(x){
+	this.x=parseFloat(x);
+};
+/**
+* set the y2-coord
+* @param {number} y y2-coord control point
+*/
+GLGE.BezTriple.prototype.setY2=function(y){
+	this.y=parseFloat(y);
+};
+/**
+* set the x3-coord
+* @param {number} x x3-coord control point
+*/
+GLGE.BezTriple.prototype.setX3=function(x){
+	this.x3=parseFloat(x);
+};
+/**
+* set the y3-coord
+* @param {number} y y3-coord control point
+*/
+GLGE.BezTriple.prototype.setY3=function(y){
+	this.y3=parseFloat(y);
+};
+
 
 /**
 * @class A LinearPoint class to add points to the Animation Curve 
+* @param {string} uid unique string for this class
+*/
+GLGE.LinearPoint=function(uid){
+	GLGE.Assets.registerAsset(this,uid);
+};
+GLGE.LinearPoint.prototype.className="LinearPoint";
+/**
+* set the x-coord
 * @param {number} x x-coord control point
+*/
+GLGE.LinearPoint.prototype.setX=function(x){
+	this.x=parseFloat(x);
+};
+/**
+* set the y-coord
 * @param {number} y y-coord control point
 */
-GLGE.LinearPoint=function(x,y){
-	this.x=parseFloat(x);
+GLGE.LinearPoint.prototype.setY=function(y){
 	this.y=parseFloat(y);
 };
+
 
 /**
 * @class A StepPoint class to add points to the Animation Curve 
@@ -1339,10 +1514,12 @@ GLGE.StepPoint=function(x,value){
 /**
 * @class A curve which interpolates between control points
 */
-GLGE.AnimationCurve=function(){
-    this.keyFrames=[];
-    this.solutions={};
+GLGE.AnimationCurve=function(uid){
+	GLGE.Assets.registerAsset(this,uid);
+	this.keyFrames=[];
+	this.solutions={};
 };
+GLGE.AnimationCurve.prototype.className="AnimationCurve";
 GLGE.AnimationCurve.prototype.keyFrames=null;
 /**
 * Adds a point to the curve
@@ -1374,10 +1551,10 @@ GLGE.AnimationCurve.prototype.getValue=function(frame){
 		}else if(this.keyFrames[i].x<=frame && (preStartKey==undefined || this.keyFrames[i].x>this.keyFrames[preStartKey].x)){
 			preStartKey=i;
 		}
-		if(this.keyFrames[i].x>frame && (endKey==undefined || this.keyFrames[i].x<this.keyFrames[endKey].x)){
+		if(this.keyFrames[i].x>frame && (endKey==undefined || this.keyFrames[i].x<=this.keyFrames[endKey].x)){
 			preEndKey=endKey;
 			endKey=i;
-		}else if(this.keyFrames[i].x>frame && (preEndKey==undefined || this.keyFrames[i].x<this.keyFrames[preEndKey].x)){
+		}else if(this.keyFrames[i].x>frame && (preEndKey==undefined || this.keyFrames[i].x<=this.keyFrames[preEndKey].x)){
 			preEndKey=i;
 		}
 	}
@@ -1417,6 +1594,7 @@ GLGE.AnimationCurve.prototype.getValue=function(frame){
 	if(this.keyFrames[startKey] instanceof GLGE.StepPoint){
 		return this.keyFrames[startKey].y
 	}
+	if(!this.keyFrames.preStartKey) this.keyFrames.preStartKey=this.keyFrames[0].y;
 	return this.keyFrames.preStartKey;
 };
 /**
@@ -1577,176 +1755,6 @@ GLGE.augment=function(obj1,obj2){
 }
 
 
-/**
-* @class Class defining a bones name and position in a skeleton
-* @param {string} name the name of the bone
-* @param {number} x the x co-ordinate of the bone
-* @param {number} y the y co-ordinate of the bone
-* @param {number} z the z co-ordinate of the bone
-*/
-GLGE.Bone=function(name,x,y,z){
-	this.name=name;
-	this.x=x;
-	this.y=y;
-	this.z=z;
-}
-
-GLGE.error=function(message){
-	alert(message)
-}
-
-/**
-* @class Class specifing bones,locations and relationships
-*/
-GLGE.Skeleton=function(){
-    this.bones=[];
-};
-GLGE.Skeleton.prototype.bones=[];
-/**
-* Adds a bone to the skeleton
-* @param {GLGE.Bone} bone the bone to add
-* NOTE  why don't I just add the parent into the bone object????
-*/
-GLGE.Skeleton.prototype.addBone=function(bone,parent){
-	if(parent) bone.parent=parent;
-	this.bones.push(bone);
-}
-/**
-* Gets the transform of a bone for a given action at a specified frame
-* @param {string} bone the bone to get the matrix for
-* @param {GLGE.SkeletalAction} action the action to the the matrix for
-* @param {number} frame The frame number to get the matrix for
-* @returns Matrix
-*/
-GLGE.Skeleton.prototype.getBoneTransforms=function(bone,action,frame){
-	var TRANS1=GLGE.translateMatrix(bone.x*-1,bone.y*-1,bone.z*-1);
-	var TRANS2=GLGE.translateMatrix(bone.x,bone.y,bone.z);
-
-	var result=GLGE.identMatrix();
-	if(action && action.cache[frame][bone.name]) result=TRANS2.x(action.cache[frame][bone.name]).x(TRANS1);
-	return result;
-}
-/**
-* Gets the bone object from it's name
-* @param {string} name the name of the bone to get
-* @returns GLGE.Bone
-*/
-GLGE.Skeleton.prototype.boneFromName=function(name){
-    for(var i=0; i<this.bones.length;i++){
-        if(this.bones[i].name==name){
-            return i;
-            break;
-        }
-    }
-    return false;
-}
-/**
-* Gets and array containing the transforms of each of the bones
-* @param {GLGE.SkeletalAction} action the action to get the transforms for
-* @param {number} frame the frame number
-* @returns Matrix[]
-*/
-GLGE.Skeleton.prototype.getTransforms=function(action,frame){
-	if(!action) alert(frame);
-	var transforms={}
-	for(var i=0; i<this.bones.length;i++){
-            bone=this.bones[i];
-            base=this.getBoneTransforms(bone,action,frame);
-            while(bone.parent){
-		if(!bone.parentIdx) bone.parentIdx=this.boneFromName(bone.parent);
-                bone=this.bones[bone.parentIdx];
-                base=this.getBoneTransforms(bone,action,frame).x(base);
-            }
-            transforms[this.bones[i].name]=({name:this.bones[i].name,matrix:base});
-        }
-	return transforms;
-}
-
-
-
-
-/**
-* @class Class to perform an action on a skeleton
-*/
-GLGE.SkeletalAction=function(frames){
-	this.frames=frames;
-	this.AnimationVectors=[];
-}
-GLGE.SkeletalAction.prototype.frames=0;
-GLGE.SkeletalAction.prototype.frameRate=60;
-GLGE.SkeletalAction.prototype.cache=null;
-GLGE.SkeletalAction.prototype.AnimationVectors=null;
-/**
-* Adds an animation to one of the bone
-* @param {string} boneName The name of the bone
-* @param {GLGE.AnimationVector} AnimationVector The animation to associate with the bone
-*/
-GLGE.SkeletalAction.prototype.addAnimationVector=function(boneName,AnimationVector){
-	this.AnimationVectors[boneName]=AnimationVector;
-}
-/**
-* Removed an animation for a bone
-* @param {string} boneName The name of the bone
-*/
-GLGE.SkeletalAction.prototype.removeCurve=function(boneName){
-	delete(this.AnimationVectors[boneName]);
-}
-/**
-* Get the values of the animation vector for a given bone on a given channel at a given frame
-* @param {string} boneName The name of the bone
-* @param {string} channel The animation vector channel
-* @param {number} frame The frame to get the value for
-* @returns {object}
-*/
-GLGE.SkeletalAction.prototype.boneValue=function(boneName,channel,frame){
-	var result;
-	var result=0;
-	if(channel=="ScaleX" || channel=="ScaleY" || channel=="ScaleZ") result=1;
-	if(this.AnimationVectors[boneName] && this.AnimationVectors[boneName].curves[channel]){
-		result=this.AnimationVectors[boneName].curves[channel].getValue(frame);
-	}
-	return result;
-}
-/**
-* Get the transformation matrix for the bone at a given frame
-* @param {string} boneName The name of the bone
-* @param {number} frame The frame to get the value for
-* @returns {Matrix}
-*/
-GLGE.SkeletalAction.prototype.getBoneTransform=function(boneName,frame){
-	var LOCX=this.boneValue(boneName,"LocX",frame);
-	var LOCY=this.boneValue(boneName,"LocY",frame);
-	var LOCZ=this.boneValue(boneName,"LocZ",frame);
-	var SCALEX=this.boneValue(boneName,"ScaleX",frame);
-	var SCALEY=this.boneValue(boneName,"ScaleY",frame);
-	var SCALEZ=this.boneValue(boneName,"ScaleZ",frame);
-	var QUATX=this.boneValue(boneName,"QuatX",frame);
-	var QUATY=this.boneValue(boneName,"QuatY",frame);
-	var QUATZ=this.boneValue(boneName,"QuatZ",frame);
-	var QUATW=this.boneValue(boneName,"QuatW",frame);
-	
-
-	var QUAT=GLGE.quatRotation(QUATX,QUATY,QUATZ,QUATW);
-	var LOC=GLGE.translateMatrix(LOCX,LOCY,LOCZ);
-	var SCALE=GLGE.scaleMatrix(SCALEX,SCALEY,SCALEZ);
-	return LOC.x(QUAT).x(SCALE);
-}
-/**
-* Cache all the transforms for this action
-*/
-GLGE.SkeletalAction.prototype.cacheTransforms=function(){
-	this.cache=[];
-	var transforms;
-	for(var frame=1; frame<=this.frames;frame++){
-		transforms={};
-		for(bone in this.AnimationVectors){
-			if(this.AnimationVectors[bone] instanceof GLGE.AnimationVector){
-				transforms[bone]=this.getBoneTransform(bone,frame+0.5);
-			}
-		}
-		this.cache[frame]=transforms;
-	}
-}
 
 /**
 * @constant 
@@ -1765,87 +1773,247 @@ GLGE.G_ROOT=2;
 */
 GLGE.Group=function(uid){
 	GLGE.Assets.registerAsset(this,uid);
-	this.objects=[];
+	this.children=[];
 }
 GLGE.augment(GLGE.Placeable,GLGE.Group);
 GLGE.augment(GLGE.Animatable,GLGE.Group);
-GLGE.Group.prototype.objects=null;
+GLGE.Group.prototype.children=null;
+GLGE.Group.prototype.className="Group";
 GLGE.Group.prototype.type=GLGE.G_NODE;
 /**
-* sets the scene this group is in
-* @param {GLGE.Scene} scene the scene
-* @private
+* Gets a list of all objects in this group
+* @param {array} pointer to an array [optional]
+* @returns {GLGE.Object[]} an array of GLGE.Objects
 */
-GLGE.Group.prototype.setScene=function(scene){
-	this.scene=scene;
-    	for(var i=0;i<this.objects.length;i++){
-		this.objects[i].setScene(this.scene);
+GLGE.Group.prototype.getObjects=function(objects){
+	if(!objects) objects=[];
+	for(var i=0; i<this.children.length;i++){
+		if(this.children[i].className=="Object" || this.children[i].className=="Text"){
+			objects.push(this.children[i]);
+			this.children[i].sceneIndex=objects.length;
+		}else if(this.children[i].getObjects){
+			this.children[i].getObjects(objects);
+		}
 	}
+	return objects;
 }
 /**
-* sets the scene this group is in
-* @returns {GLGE.Scene}
-* @private
+* Gets a list of all lights in this group
+* @param {array} pointer to an array [optional]
+* @returns {GLGE.Lights[]} an array of GLGE.Lights
 */
-GLGE.Group.prototype.getScene=function(){
-    return this.scene;
+GLGE.Group.prototype.getLights=function(lights){
+	if(!lights) lights=[];
+	for(var i=0; i<this.children.length;i++){
+		if(this.children[i].className=="Light"){
+			lights.push(this.children[i]);
+		}else if(this.children[i].getLights){
+			this.children[i].getLights(lights);
+		}
+	}
+	return lights;
 }
 /**
 * Adds a new object to this group
 * @param {object} object the object to add to this group
 */
-GLGE.Group.prototype.addObject=function(object){
-	if(object.parent) object.parent.remove(object);
-	if(this.scene){
-		if(object instanceof GLGE.Object){
-			this.scene.addObject(object);
-		}
-		else
-		{
-			this.scene.addGroup(object);
-		}
-		object.setScene(this.scene);
-	}
+GLGE.Group.prototype.addChild=function(object){
+	if(object.parent) object.parent.removeChild(object);
+	object.matrix=null; //clear any cache
 	object.parent=this;
-	this.objects.push(object);
+	this.children.push(object);
 }
-/**
-* @method Adds a new sub group to this group
-* @param {object} object the sub group to add to this group
-*/
-GLGE.Group.prototype.addGroup=GLGE.Group.prototype.addObject;
+GLGE.Group.prototype.addObject=GLGE.Group.prototype.addChild;
+GLGE.Group.prototype.addGroup=GLGE.Group.prototype.addChild;
+GLGE.Group.prototype.addText=GLGE.Group.prototype.addChild;
+GLGE.Group.prototype.addSkeleton=GLGE.Group.prototype.addChild;
+GLGE.Group.prototype.addLight=GLGE.Group.prototype.addChild;
+GLGE.Group.prototype.addCamera=GLGE.Group.prototype.addChild;
 /**
 * Removes an object or sub group from this group
 * @param {object} object the item to remove
 */
-GLGE.Group.prototype.remove=function(object){
-	for(var i=0;i<this.objects.length;i++){
-		if(this.objects[i]==object){
-			this.objects.splice(i, 1);
-			if(this.scene) this.scene.removeObject(object);
+GLGE.Group.prototype.removeChild=function(object){
+	for(var i=0;i<this.children.length;i++){
+		if(this.children[i]==object){
+			this.children.splice(i, 1);
+			if(this.scene && this.scene["remove"+object.className]){
+				this.scene["remove"+object.className](object);
+			}
 			break;
 		}
 	}
 }
 /**
-* Gets an array of all objects in this group and all it's subgroups
+* Gets an array of all children in this group
 */
-GLGE.Group.prototype.getObjects=function(){
-	var subs,j;
-	var returnObjects=[];
-	for(var i=0;i<this.objects.length;i++){
-		if(this.objects[i] instanceof GLGE.Object){
-			returnObjects.push(this.objects[i]);
-		}
-		if(this.objects[i] instanceof GLGE.Group){
-			subs=this.objects[i].getObjects();
-			for(j=0;j<subs.length;j++){
-				returnObjects.push(subs[j]);
-			}
+GLGE.Group.prototype.getChildren=function(){
+	return this.children;
+}
+/**
+* Initiallize all the GL stuff needed to render to screen
+* @private
+*/
+GLGE.Group.prototype.GLInit=function(gl){
+	this.gl=gl;
+	for(var i=0;i<this.children.length;i++){
+		if(this.children[i].GLInit){
+			this.children[i].GLInit(gl);
 		}
 	}
-	return returnObjects;
 }
+/**
+* Renders the group to the render buffer
+* @private
+*/
+GLGE.Group.prototype.GLRender=function(gl,renderType){
+	//animate this object
+	if(renderType==GLGE.RENDER_DEFAULT){
+		if(this.animation) this.animate();
+	}
+	if(!this.gl){
+		this.GLInit(gl);
+	}
+	for(var i=0;i<this.children.length;i++){
+		if(this.children[i].GLRender){
+			this.children[i].GLRender(gl,renderType);
+		}
+	}
+}
+ 
+/**
+* @class Class defining a channel of animation for an action
+* @param {string} uid a unique reference string for this object
+*/
+GLGE.ActionChannel=function(uid){
+	GLGE.Assets.registerAsset(this,uid);
+	this.updateListeners=[];
+}
+/**
+* Sets the name of the bone channel
+* @param {string} name the name of the bone channel
+*/
+GLGE.ActionChannel.prototype.setName=function(name){
+	this.name=name;
+	for(var i=0;i<this.updateListeners.length;i++){
+		this.updateListeners[i]();
+	}
+	this.updateEvent();
+};
+/**
+* Sets the animation for this channel
+* @param {GLGE.AnimationVector} animation the animation vector for this channel
+*/
+GLGE.ActionChannel.prototype.setAnimation=function(animation){
+	this.animation=animation;
+	for(var i=0;i<this.updateListeners.length;i++){
+		this.updateListeners[i]();
+	}
+	this.updateEvent();
+};
+/**
+* Gets the name of the bone channel
+* @returns {string} the name of the bone channel
+*/
+GLGE.ActionChannel.prototype.getName=function(){
+	return this.name;
+};
+/**
+* Gets the animation vector for this channel
+* @returns {GLGE.AnimationVector} the animation vector for this channel
+*/
+GLGE.ActionChannel.prototype.getAnimation=function(){
+	return this.animation;
+};
+/**
+* Adds an update listener
+* @private
+*/
+GLGE.ActionChannel.prototype.addUpdateListener=function(listener){
+	this.updateListeners.push(listener);
+};
+/**
+* Removes an update listener
+* @private
+*/
+GLGE.ActionChannel.prototype.removeUpdateListener=function(listener){
+	for(var i=0;i<this.updateListeners.length;i++){
+		if(this.updateListeners[i]==listener){
+			this.updateListeners.splice(i,1);
+			break;
+		}
+	}
+};
+/**
+* calls each of the listeners
+* @private
+*/
+GLGE.ActionChannel.prototype.updateEvent=function(){
+	for(var i=0;i<this.updateListeners.length;i++){
+		this.updateListeners[i]();
+	}
+}
+/**
+* @class Class to describe and action on a skeleton
+* @param {string} uid a unique reference string for this object
+*/
+GLGE.Action=function(uid){
+	GLGE.Assets.registerAsset(this,uid);
+	this.channels=[];
+	this.updateListeners=[];
+};
+/**
+* Adds and action channel to this action
+* @param {GLGE.ActionChannel} channel the channel to be added
+*/
+GLGE.Action.prototype.addActionChannel=function(channel){
+	this.channels.push(channel);
+	channel.addUpdateListener(this.updateEvent);
+	this.updateEvent();
+};
+/**
+* Removes and action channel to this action
+* @param {GLGE.ActionChannel} channel the channel to be removed
+*/
+GLGE.Action.prototype.removeActionChannel=function(channel){
+	for(var i=0;i<this.channels.length;i++){
+		if(this.channels[i]==channels){
+			this.channels.splice(i,1);
+			break;
+		}
+	}
+	channel.removeUpdateListener(this.updateEvent);
+	this.updateEvent();
+};
+/**
+* Adds an update listener
+* @private
+*/
+GLGE.Action.prototype.addUpdateListener=function(listener){
+	this.updateListeners.push(listener);
+};
+/**
+* Removes an update listener
+* @private
+*/
+GLGE.Action.prototype.removeUpdateListener=function(listener){
+	for(var i=0;i<this.updateListeners.length;i++){
+		if(this.updateListeners[i]==listener){
+			this.updateListeners.splice(i,1);
+			break;
+		}
+	}
+};
+/**
+* calls each of the listeners
+* @private
+*/
+GLGE.Action.prototype.updateEvent=function(){
+	for(var i=0;i<this.updateListeners.length;i++){
+		this.updateListeners[i]();
+	}
+}
+
 
 /**
 * @class Text that can be rendered in a scene
@@ -1859,6 +2027,7 @@ GLGE.Text=function(uid){
 }
 GLGE.augment(GLGE.Placeable,GLGE.Text);
 GLGE.augment(GLGE.Animatable,GLGE.Text);
+GLGE.Text.prototype.className="Text";
 GLGE.Text.prototype.zTrans=true;
 GLGE.Text.prototype.canvas=null;
 GLGE.Text.prototype.aspect=1.0;
@@ -2087,11 +2256,12 @@ GLGE.Text.prototype.updateCanvas=function(gl){
 * @private
 */
 GLGE.Text.prototype.GLRender=function(gl,renderType){
+	if(!this.gl){
+		this.GLInit(gl);
+	}
 	if(renderType==GLGE.RENDER_DEFAULT || renderType==GLGE.RENDER_PICK){	
 		//if look at is set then look
 		if(this.lookAt) this.Lookat(this.lookAt);
-		//animate this object
-		if(this.animation) this.animate();
 		
 		gl.useProgram(this.GLShaderProgram);
 
@@ -2118,15 +2288,22 @@ GLGE.Text.prototype.GLRender=function(gl,renderType){
 			gl.uniform1i(GLGE.getUniformLocation(gl,this.GLShaderProgram, "picktype"), 0);	
 		}
 		
+		if(!this.GLShaderProgram.glarrays) this.GLShaderProgram.glarrays={};
+
+		
 		//generate and set the modelView matrix
 		var scalefactor=this.size/100;
-		var mMatrix=this.scene.camera.getViewMatrix().x(this.getModelMatrix().x(GLGE.scaleMatrix(this.aspect*scalefactor,scalefactor,scalefactor)));
+		var mMatrix=gl.scene.camera.getViewMatrix().x(this.getModelMatrix().x(GLGE.scaleMatrix(this.aspect*scalefactor,scalefactor,scalefactor)));
 		var mUniform = GLGE.getUniformLocation(gl,this.GLShaderProgram, "Matrix");
-		gl.uniformMatrix4fv(mUniform, false, mMatrix.glData());
+		if(!this.GLShaderProgram.glarrays.mMatrix) this.GLShaderProgram.glarrays.mMatrix=new WebGLFloatArray(mMatrix);
+			else GLGE.mat4gl(mMatrix,this.GLShaderProgram.glarrays.mMatrix);
+		gl.uniformMatrix4fv(mUniform, false, this.GLShaderProgram.glarrays.mMatrix);
 		var mUniform = GLGE.getUniformLocation(gl,this.GLShaderProgram, "PMatrix");
-		gl.uniformMatrix4fv(mUniform, false, this.scene.camera.getProjectionMatrix().glData());
+		if(!this.GLShaderProgram.glarrays.pMatrix) this.GLShaderProgram.glarrays.pMatrix=new WebGLFloatArray(gl.scene.camera.getProjectionMatrix());
+			else GLGE.mat4gl(gl.scene.camera.getProjectionMatrix(),this.GLShaderProgram.glarrays.pMatrix);
+		gl.uniformMatrix4fv(mUniform, false, this.GLShaderProgram.glarrays.pMatrix);
 		var farUniform = GLGE.getUniformLocation(gl,this.GLShaderProgram, "far");
-		gl.uniform1f(farUniform, this.scene.camera.getFar());
+		gl.uniform1f(farUniform, gl.scene.camera.getFar());
 		//set the color
 		gl.uniform3f(GLGE.getUniformLocation(gl,this.GLShaderProgram, "color"), this.color.r,this.color.g,this.color.b);
 		
@@ -2158,22 +2335,6 @@ GLGE.Text.prototype.createPlane=function(gl){
 	this.GLfaces.itemSize = 1;
 	this.GLfaces.numItems = 6;
 }
-/**
-* sets the scene this text is in
-* @param {GLGE.Scene} scene the scene
-* @private
-*/
-GLGE.Text.prototype.setScene=function(scene){
-    this.scene=scene;
-}
-/**
-* sets the scene this text is in
-* @returns {GLGE.Scene}
-* @private
-*/
-GLGE.Text.prototype.getScene=function(){
-    return this.scene;
-}
 
 
 
@@ -2184,10 +2345,9 @@ GLGE.Text.prototype.getScene=function(){
 */
 GLGE.MultiMaterial=function(uid){
 	GLGE.Assets.registerAsset(this,uid);
-	//if(mesh) this.mesh=mesh;
-	//if(material) this.material=material;
 }
 GLGE.MultiMaterial.prototype.mesh=null;
+GLGE.MultiMaterial.prototype.className="MultiMaterial";
 GLGE.MultiMaterial.prototype.material=null;
 GLGE.MultiMaterial.prototype.program=null;
 GLGE.MultiMaterial.prototype.GLShaderProgramPick=null;
@@ -2198,6 +2358,7 @@ GLGE.MultiMaterial.prototype.GLShaderProgram=null;
 * @param {GLGE.Mesh} mesh 
 */
 GLGE.MultiMaterial.prototype.setMesh=function(mesh){
+	if(typeof mesh=="string")  mesh=GLGE.Assets.get(mesh);
 	this.GLShaderProgram=null;
 	this.mesh=mesh;
 }
@@ -2213,6 +2374,7 @@ GLGE.MultiMaterial.prototype.getMesh=function(){
 * @param {GLGE.Material} material 
 */
 GLGE.MultiMaterial.prototype.setMaterial=function(material){
+	if(typeof material=="string")  material=GLGE.Assets.get(material);
 	this.GLShaderProgram=null;
 	this.material=material;
 }
@@ -2236,94 +2398,16 @@ GLGE.Object=function(uid){
 }
 GLGE.augment(GLGE.Placeable,GLGE.Object);
 GLGE.augment(GLGE.Animatable,GLGE.Object);
-GLGE.Object.prototype.action=null;
+GLGE.Object.prototype.className="Object";
 GLGE.Object.prototype.mesh=null;
 GLGE.Object.prototype.skeleton=null;
 GLGE.Object.prototype.scene=null;
 GLGE.Object.prototype.transformMatrix=GLGE.identMatrix();
 GLGE.Object.prototype.material=null;
 GLGE.Object.prototype.gl=null;
-GLGE.Object.prototype.actionStart=null;
-GLGE.Object.prototype.blendState=null;
-GLGE.Object.prototype.actionCache=null;
 GLGE.Object.prototype.multimaterials=null;
 GLGE.Object.prototype.zTrans=false;
 GLGE.Object.prototype.id="";
-
-/**
-* Blend from current skeletal action to another
-* @param {GLGE.SkeletalAction} action The action to be blended to
-* @param {Number} duration Number of millisecons the blend should last for
-*/
-GLGE.Object.prototype.blendAction=function(action,duration){
-    this.blendState=this.getBoneTransforms();
-    this.setAction(action);
-    this.blendDuration=duration;
-    this.actionCache=[];
-}
-/**
-* Sets the skeletal action of this object
-* @param {GLGE.SkeletalAction} action The action to be blended to
-*/
-GLGE.Object.prototype.setAction=function(action){
-    this.action=action;
-    this.actionCache=[];
-    if(!this.action.cache) this.action.cacheTransforms();
-    this.actionStart=parseInt(new Date().getTime());
-}
-/**
-* Gets the current skeletal action of this object
-* @returns GLGE.SkeletalAction
-*/
-GLGE.Object.prototype.getAction=function(){
-	return this.action
-}
-/**
-* Gets the current transfroms for each of the bones
-* @returns Matrix[]
-* @private
-*/
-GLGE.Object.prototype.getBoneTransforms=function(){
-	var now=parseInt(new Date().getTime());
-	var frame;
-	if(this.action.frames>1){
-		frame=((now-this.actionStart)/1000*this.action.frameRate)%(this.action.frames-1)+1; 
-	}else{
-		frame=1;
-	}
-	frame=Math.round(frame);
-	if(this.actionCache[frame]){
-		var transforms=this.actionCache[frame];
-	}
-	else
-	{
-		var transforms=this.skeleton.getTransforms(this.action,frame);
-		if(this.blendState){
-			var blendframe;
-			var blendpoint=(now-this.actionStart)/this.blendDuration;
-			if(blendpoint>=1){
-				this.blendState=null;
-				this.actionCache=[];
-			}
-			else
-			{
-			    //combine the two sets of transforms
-			    var newtransforms={};
-			    for(bone in transforms){
-				if(transforms[bone].matrix){
-					newtransforms[bone]={matrix:this.blendState[bone].matrix.x(1-blendpoint).add(transforms[bone].matrix.x(blendpoint))};
-				}
-			    }
-			    transforms=newtransforms;            
-			}
-		}
-		else
-		{
-			this.actionCache[frame]=transforms;
-		}
-	}
-	return transforms;
-}
 
 /**
 * Sets the Z Transparency of this object
@@ -2359,6 +2443,7 @@ GLGE.Object.prototype.getSkeleton=function(){
 * @param GLGE.Material
 */
 GLGE.Object.prototype.setMaterial=function(material,idx){
+	if(typeof material=="string")  material=GLGE.Assets.get(material);
 	if(!idx) idx=0;
 	if(!this.multimaterials[idx]) this.multimaterials[idx]=new GLGE.MultiMaterial();
 	if(this.multimaterials[idx].getMaterial()!=material){
@@ -2378,17 +2463,12 @@ GLGE.Object.prototype.getMaterial=function(idx){
 		return false;
 	}
 }
-GLGE.Object.prototype.setScene=function(scene){
-    this.scene=scene;
-}
-GLGE.Object.prototype.getScene=function(){
-    return this.scene;
-}
 /**
 * Sets the mesh associated with the object
 * @param GLGE.Mesh
 */
 GLGE.Object.prototype.setMesh=function(mesh,idx){
+	if(typeof mesh=="string")  mesh=GLGE.Assets.get(mesh);
 	if(!idx) idx=0;
 	if(!this.multimaterials[idx]) this.multimaterials.push(new GLGE.MultiMaterial());
 	this.multimaterials[idx].setMesh(mesh);
@@ -2432,6 +2512,7 @@ GLGE.Object.prototype.updateProgram=function(){
 * @returns GLGE.Material
 */
 GLGE.Object.prototype.addMultiMaterial=function(multimaterial){
+	if(typeof multimaterial=="string")  multimaterial=GLGE.Assets.get(multimaterial);
 	this.multimaterials.push(multimaterial);
 }
 /**
@@ -2448,39 +2529,43 @@ GLGE.Object.prototype.getMultiMaterials=function(){
 GLGE.Object.prototype.GLGenerateShader=function(gl){
 	//create the programs strings
 	//Vertex Shader
-	var UV=false;
+	var UV=joints1=joints2=false;
+	var lights=gl.lights;
 	var vertexStr="";
 	var tangent=false;
 	for(var i=0;i<this.mesh.buffers.length;i++){
 		if(this.mesh.buffers[i].name=="tangent") tangent=true;
-		if(this.mesh.buffers[i].size>1)
+		if(this.mesh.buffers[i].size>1){
+			if(this.mesh.buffers[i].size>4) alert(this.mesh.buffers[i].name);
 			vertexStr=vertexStr+"attribute vec"+this.mesh.buffers[i].size+" "+this.mesh.buffers[i].name+";\n";
-		else
+		}else{
 			vertexStr=vertexStr+"attribute float "+this.mesh.buffers[i].name+";\n";
+		}
 		if(this.mesh.buffers[i].name=="UV") UV=true;
+		if(this.mesh.buffers[i].name=="joints1") joints1=this.mesh.buffers[i];
+		if(this.mesh.buffers[i].name=="joints2") joints2=this.mesh.buffers[i];
 	}
 	
 	vertexStr=vertexStr+"uniform mat4 MVMatrix;\n";
 	vertexStr=vertexStr+"uniform mat4 PMatrix;\n";  
-	//normals needed for lighting
 	vertexStr=vertexStr+"uniform mat4 uNMatrix;\n"; 
 
-	for(var i=0; i<this.scene.lights.length;i++){
+	for(var i=0; i<lights.length;i++){
 			vertexStr=vertexStr+"uniform vec3 lightpos"+i+";\n";
 			vertexStr=vertexStr+"uniform vec3 lightdir"+i+";\n";
 			vertexStr=vertexStr+"uniform mat4 lightmat"+i+";\n";
 	}
-  
-	for(var i=0; i<this.mesh.boneWeights.length; i++){
-		vertexStr=vertexStr+"uniform mat4 "+this.mesh.boneWeights[i].boneName+"Matrix;\n";  
-		vertexStr=vertexStr+"uniform mat4 "+this.mesh.boneWeights[i].boneName+"nMatrix;\n";  
-	}
 	
 	vertexStr=vertexStr+"varying vec3 eyevec;\n"; 
-	for(var i=0; i<this.scene.lights.length;i++){
+	for(var i=0; i<lights.length;i++){
 			vertexStr=vertexStr+"varying vec3 lightvec"+i+";\n"; 
 			vertexStr=vertexStr+"varying vec3 tlightvec"+i+";\n"; 
 			vertexStr=vertexStr+"varying float lightdist"+i+";\n"; 
+	}
+	
+	if(this.mesh.joints && this.mesh.joints.length>0){
+		vertexStr=vertexStr+"uniform mat4 jointMat["+(this.mesh.joints.length)+"];\n"; 
+		vertexStr=vertexStr+"uniform mat4 jointNMat["+(this.mesh.joints.length)+"];\n"; 
 	}
     
 	vertexStr=vertexStr+"varying vec3 n;\n";  
@@ -2498,51 +2583,44 @@ GLGE.Object.prototype.GLGenerateShader=function(gl){
 	vertexStr=vertexStr+"OBJCoord = position;\n";
 	vertexStr=vertexStr+"vec4 pos = vec4(0.0, 0.0, 0.0, 1.0);\n";
 	vertexStr=vertexStr+"vec4 norm = vec4(0.0, 0.0, 0.0, 1.0);\n";
-	var cnt=0;
-	//calculate the total bone weight
-	var totalWeight=0;
-	vertexStr=vertexStr+"float totalWeight=0.0";
-	for(var i=0; i<this.mesh.boneWeights.length; i=i+4){
-		if(!this.mesh.boneWeights[i+1]){
-			vertexStr=vertexStr+"+bones"+cnt;
+	vertexStr=vertexStr+"vec4 tang4 = vec4(0.0, 0.0, 0.0, 1.0);\n";
+	
+	if(joints1){
+		if(joints1.size==1){
+			vertexStr=vertexStr+"pos += jointMat[int(joints1)]*vec4(position,1.0)*weights1;\n";
+			vertexStr=vertexStr+"norm += jointNMat[int(joints1)]*vec4(normal,1.0)*weights1;\n";  
+			if(tangent) vertexStr=vertexStr+"tang4 +=  jointNMat[int(joints1)]*vec4(tangent,1.0)*weights1;\n";
 		}else{
-			vertexStr=vertexStr+"+bones"+cnt+"["+(i%4)+"]";
+			for(var i=0;i<joints1.size;i++){
+				vertexStr=vertexStr+"pos += jointMat[int(joints1["+i+"])]*vec4(position,1.0)*weights1["+i+"];\n";
+				vertexStr=vertexStr+"norm += jointNMat[int(joints1["+i+"])]*vec4(normal,1.0)*weights1["+i+"];\n";  
+				if(tangent) vertexStr=vertexStr+"tang4 +=  jointNMat[int(joints1["+i+"])]*vec4(tangent,1.0)*weights1["+i+"];\n";
+			}
 		}
-		if(this.mesh.boneWeights[i+1]) vertexStr=vertexStr+"+bones"+cnt+"["+(i%4+1)+"]";
-		if(this.mesh.boneWeights[i+2]) vertexStr=vertexStr+"+bones"+cnt+"["+(i%4+2)+"]";
-		if(this.mesh.boneWeights[i+3]) vertexStr=vertexStr+"+bones"+cnt+"["+(i%4+3)+"]";
-		cnt++;
-	}
-	vertexStr=vertexStr+";\n";
-	vertexStr=vertexStr+"if(totalWeight>0.0){\n";
-	cnt=0;
-	for(var i=0; i<this.mesh.boneWeights.length; i=i+4){
-		if(!this.mesh.boneWeights[i+1]){
-		    vertexStr=vertexStr+"pos += ("+this.mesh.boneWeights[i].boneName+"Matrix * vec4(position, 1.0))*(bones"+cnt+"/totalWeight);\n";
-		    vertexStr=vertexStr+"norm += ("+this.mesh.boneWeights[i].boneName+"nMatrix * vec4(normal, 1.0))*(bones"+cnt+"/totalWeight);\n";
-		    }else{
-		    vertexStr=vertexStr+"pos += ("+this.mesh.boneWeights[i].boneName+"Matrix * vec4(position, 1.0))*(bones"+cnt+"["+(i%4)+"]/totalWeight);\n";
-		    vertexStr=vertexStr+"norm += ("+this.mesh.boneWeights[i].boneName+"nMatrix * vec4(normal, 1.0))*(bones"+cnt+"["+(i%4)+"]/totalWeight);\n";
+		if(joints2){
+			if(joints2.size==1){
+				vertexStr=vertexStr+"pos += jointMat[int(joints2)]*vec4(position,1.0)*weights2;\n";
+				vertexStr=vertexStr+"norm += jointNMat[int(joints2)]*vec4(normal,1.0)*weights2;\n";  
+				if(tangent) vertexStr=vertexStr+"tang4 +=  jointNMat[int(joints2)]*vec4(tangent,1.0)*weights2;\n";
+			}else{
+				for(var i=0;i<joints2.size;i++){
+					vertexStr=vertexStr+"pos += jointMat[int(joints2["+i+"])]*vec4(position,1.0)*weights2["+i+"];\n";
+					vertexStr=vertexStr+"norm += jointNMat[int(joints2["+i+"])]*vec4(normal,1.0)*weights2["+i+"];\n";  
+					if(tangent) vertexStr=vertexStr+"tang4 +=  jointNMat[int(joints2["+i+"])]*vec4(tangent,1.0)*weights2["+i+"];\n";
+				}
+			}
 		}
-		if(this.mesh.boneWeights[i+1]) vertexStr=vertexStr+"pos += ("+this.mesh.boneWeights[i+1].boneName+"Matrix * vec4(position, 1.0))*(bones"+cnt+"["+(i%4+1)+"]/totalWeight);\n";
-		if(this.mesh.boneWeights[i+2]) vertexStr=vertexStr+"pos += ("+this.mesh.boneWeights[i+2].boneName+"Matrix * vec4(position, 1.0))*(bones"+cnt+"["+(i%4+2)+"]/totalWeight);\n";
-		if(this.mesh.boneWeights[i+3]) vertexStr=vertexStr+"pos += ("+this.mesh.boneWeights[i+3].boneName+"Matrix * vec4(position, 1.0))*(bones"+cnt+"["+(i%4+3)+"]/totalWeight);\n";
-		if(this.mesh.boneWeights[i+1]) vertexStr=vertexStr+"norm += ("+this.mesh.boneWeights[i+1].boneName+"nMatrix * vec4(normal, 1.0))*(bones"+cnt+"["+(i%4+1)+"]/totalWeight);\n";
-		if(this.mesh.boneWeights[i+2]) vertexStr=vertexStr+"norm += ("+this.mesh.boneWeights[i+2].boneName+"nMatrix * vec4(normal, 1.0))*(bones"+cnt+"["+(i%4+2)+"]/totalWeight);\n";
-		if(this.mesh.boneWeights[i+3]) vertexStr=vertexStr+"norm += ("+this.mesh.boneWeights[i+3].boneName+"nMatrix * vec4(normal, 1.0))*(bones"+cnt+"["+(i%4+3)+"]/totalWeight);\n";
-		cnt++;
+		vertexStr=vertexStr+"pos = MVMatrix * vec4(pos.xyz, 1.0);\n";
+		vertexStr=vertexStr+"norm = uNMatrix * vec4(norm.xyz, 1.0);\n";
+		if(tangent) vertexStr=vertexStr+"tang = (uNMatrix*vec4(tang4.xyz,1.0)).xyz;\n";
+	}else{	
+		vertexStr=vertexStr+"pos = MVMatrix * vec4(position, 1.0);\n";
+		vertexStr=vertexStr+"norm = uNMatrix * vec4(normal, 1.0);\n";  
+		if(tangent) vertexStr=vertexStr+"tang = (uNMatrix*vec4(tangent,1.0)).xyz;\n";
 	}
-	vertexStr=vertexStr+"pos = MVMatrix * vec4(pos.xyz, 1.0);\n";
-	vertexStr=vertexStr+"norm = uNMatrix * vec4(norm.xyz, 1.0);\n";
-	vertexStr=vertexStr+"}else{\n";
-	vertexStr=vertexStr+"pos = MVMatrix * vec4(position, 1.0);\n";
-	vertexStr=vertexStr+"norm = uNMatrix * vec4(normal, 1.0);\n";
-	vertexStr=vertexStr+"}\n";
-   
     
 	vertexStr=vertexStr+"gl_Position = PMatrix * pos;\n";
 	vertexStr=vertexStr+"eyevec = -pos.xyz;\n";
-	if(tangent) vertexStr=vertexStr+"tang = (uNMatrix*vec4(tangent,1.0)).xyz;\n";
 	
 	vertexStr=vertexStr+"t = normalize(tang);";
 	vertexStr=vertexStr+"n = normalize(norm.rgb);";
@@ -2556,8 +2634,8 @@ GLGE.Object.prototype.GLGenerateShader=function(gl){
 	}
 	
 	
-	for(var i=0; i<this.scene.lights.length;i++){			
-			if(this.scene.lights[i].getType()==GLGE.L_DIR){
+	for(var i=0; i<lights.length;i++){			
+			if(lights[i].getType()==GLGE.L_DIR){
 				vertexStr=vertexStr+"vec3 tmplightvec"+i+" = -lightdir"+i+";\n";
 			}else{
 				vertexStr=vertexStr+"vec3 tmplightvec"+i+" = -(lightpos"+i+"-pos.xyz);\n";
@@ -2577,7 +2655,7 @@ GLGE.Object.prototype.GLGenerateShader=function(gl){
 			vertexStr=vertexStr+"lightdist"+i+" = length(lightpos"+i+".xyz-pos.xyz);\n";
 	}
 	vertexStr=vertexStr+"}\n";
-	
+
 	//Fragment Shader
 	if(!this.material){
 		var fragStr="";
@@ -2588,25 +2666,30 @@ GLGE.Object.prototype.GLGenerateShader=function(gl){
 	}
 	else
 	{
-		fragStr=this.material.getFragmentShader(this.scene.lights);
+		fragStr=this.material.getFragmentShader(lights);
 	}
 	
+
 	//shadow fragment
 	var shfragStr="";
 	shfragStr=shfragStr+"varying vec3 eyevec;\n";
 	shfragStr=shfragStr+"void main(void)\n";
 	shfragStr=shfragStr+"{\n";
-	shfragStr=shfragStr+"gl_FragColor=eyevec.z / 1000.0 * vec4(1.0, 256.0, 65536.0, 16777216.0);\n";
+	shfragStr=shfragStr+"gl_FragColor=fract(gl_FragCoord.z * vec4(1.0, 256.0, 65536.0, 16777216.0));\n";
 	shfragStr=shfragStr+"}\n";
 	
 	//picking fragment
 	var pkfragStr="";
 	pkfragStr=pkfragStr+"uniform float far;\n";
+	pkfragStr=pkfragStr+"uniform vec3 pickcolor;\n";
+	pkfragStr=pkfragStr+"varying vec3 n;\n";
 	pkfragStr=pkfragStr+"void main(void)\n";
 	pkfragStr=pkfragStr+"{\n";
-	var g=parseFloat(Math.round((this.sceneIndex+1)/256)/256);
-	var r=parseFloat((this.sceneIndex-g*256+1)/256);
-	pkfragStr=pkfragStr+"gl_FragColor = vec4("+(r.toFixed(17))+", "+(g.toFixed(17))+",1.0,1.0);\n";
+	pkfragStr=pkfragStr+"float Xcoord = gl_FragCoord.x+0.5;\n";
+	pkfragStr=pkfragStr+"if(Xcoord>0.0) gl_FragColor = vec4(pickcolor,1.0);\n";
+	pkfragStr=pkfragStr+"if(Xcoord>1.0) gl_FragColor = vec4(n,1.0);\n";
+	pkfragStr=pkfragStr+"if(Xcoord>2.0) gl_FragColor = fract(gl_FragCoord.z * vec4(1.0, 256.0, 65536.0, 16777216.0));\n";
+	
 	pkfragStr=pkfragStr+"}\n";
 	
 	this.GLFragmentShaderShadow=gl.createShader(gl.FRAGMENT_SHADER);
@@ -2632,7 +2715,7 @@ GLGE.Object.prototype.GLGenerateShader=function(gl){
 	      return;
 	}
 	
-	//compile the pciking fragment
+	//compile the picking fragment
 	gl.shaderSource(this.GLFragmentShaderPick, pkfragStr);
 	gl.compileShader(this.GLFragmentShaderPick);
 	if (!gl.getShaderParameter(this.GLFragmentShaderPick, gl.COMPILE_STATUS)) {
@@ -2684,7 +2767,7 @@ GLGE.Object.prototype.createShaders=function(multimaterial){
 * Sets the shader program uniforms ready for rendering
 * @private
 */
-GLGE.Object.prototype.GLUniforms=function(gl,renderType){
+GLGE.Object.prototype.GLUniforms=function(gl,renderType,pickindex){
 	var program;
 	switch(renderType){
 		case GLGE.RENDER_DEFAULT:
@@ -2695,78 +2778,169 @@ GLGE.Object.prototype.GLUniforms=function(gl,renderType){
 			break;
 		case GLGE.RENDER_PICK:
 			program=this.GLShaderProgramPick;
+			var b = pickindex >> 16 & 0xFF; 
+			var g = pickindex >> 8 & 0xFF; 
+			var r = pickindex & 0xFF;
+			gl.uniform3f(GLGE.getUniformLocation(gl,program, "pickcolor"), r/255,g/255,b/255);
 			break;
 	}
-	var camMat=this.scene.camera.getViewMatrix();
-	//generate and set the modelView matrix
-	mvMatrix=camMat.x(this.getModelMatrix());
-	//set the amibent light
-	gl.uniform3f(GLGE.getUniformLocation(gl,program, "amb"), this.scene.ambientColor.r,this.scene.ambientColor.g,this.scene.ambientColor.b);
-	//set the amibent light
-	gl.uniform1f(GLGE.getUniformLocation(gl,program, "far"), this.scene.camera.far);
-	gl.uniform1f(GLGE.getUniformLocation(gl,program, "fogfar"), this.scene.fogFar);
-	gl.uniform1f(GLGE.getUniformLocation(gl,program, "fognear"), this.scene.fogNear);
-	gl.uniform1i(GLGE.getUniformLocation(gl,program, "fogtype"), this.scene.fogType);
-	gl.uniform3f(GLGE.getUniformLocation(gl,program, "fogcolor"), this.scene.fogColor.r,this.scene.fogColor.g,this.scene.fogColor.b);
 	
-	var mvUniform = GLGE.getUniformLocation(gl,program, "MVMatrix");
-	gl.uniformMatrix4fv(mvUniform, false, mvMatrix.glData());
 	
+	if(!program.caches) program.caches={};
+	if(!program.glarrays) program.glarrays={};
+
+	if(program.caches.far!=gl.scene.camera.far){
+		gl.uniform1f(GLGE.getUniformLocation(gl,program, "far"), gl.scene.camera.far);
+		program.caches.far=gl.scene.camera.far;
+	}
+	if(renderType==GLGE.RENDER_DEFAULT){
+		if(program.caches.ambientColor!=gl.scene.ambientColor){
+			gl.uniform3f(GLGE.getUniformLocation(gl,program, "amb"), gl.scene.ambientColor.r,gl.scene.ambientColor.g,gl.scene.ambientColor.b);
+			program.caches.ambientColor=gl.scene.ambientColor;
+		}
+		if(program.caches.fogFar!=gl.scene.fogFar){
+			gl.uniform1f(GLGE.getUniformLocation(gl,program, "fogfar"), gl.scene.fogFar);
+			program.caches.fogFar=gl.scene.fogFar;
+		}
+		if(program.caches.fogNear!=gl.scene.fogNear){
+			gl.uniform1f(GLGE.getUniformLocation(gl,program, "fognear"), gl.scene.fogNear);
+			program.caches.fogNear=gl.scene.fogNear;
+		}
+		if(program.caches.fogType!=gl.scene.fogType){
+			gl.uniform1i(GLGE.getUniformLocation(gl,program, "fogtype"), gl.scene.fogType);
+			program.caches.fogType=gl.scene.fogType;
+		}
+		if(program.caches.fogType!=gl.scene.fogcolor){
+			gl.uniform3f(GLGE.getUniformLocation(gl,program, "fogcolor"), gl.scene.fogColor.r,gl.scene.fogColor.g,gl.scene.fogColor.b);
+			program.caches.fogcolor=gl.scene.fogcolor;
+		}
+	}
+
+			
+	
+	var cameraMatrix=gl.scene.camera.getViewMatrix();
+	var modelMatrix=this.getModelMatrix()
+	if(!program.caches.mvMatrix) program.caches.mvMatrix={cameraMatrix:null,modelMatrix:null};
+	var mvCache=program.caches.mvMatrix;
+	
+	if(mvCache.camerMatrix!=cameraMatrix || mvCache.modelMatrix!=modelMatrix){
+		try{
+		//generate and set the modelView matrix
+		if(!this.caches.mvMatrix) this.caches.mvMatrix=GLGE.mulMat4(cameraMatrix,modelMatrix);
+		mvMatrix=this.caches.mvMatrix;
+					
+		var mvUniform = GLGE.getUniformLocation(gl,program, "MVMatrix");
+		if(!program.glarrays.mvMatrix) program.glarrays.mvMatrix=new WebGLFloatArray(mvMatrix);
+			else GLGE.mat4gl(mvMatrix,program.glarrays.mvMatrix);
+		gl.uniformMatrix4fv(mvUniform, true, program.glarrays.mvMatrix);
+	    
+		//normalising matrix
+		if(!this.caches.normalMatrix){
+			var normalMatrix = GLGE.inverseMat4(mvMatrix);
+			this.caches.normalMatrix = normalMatrix;
+		}
+		normalMatrix=this.caches.normalMatrix;
+		var nUniform = GLGE.getUniformLocation(gl,program, "uNMatrix");
+		
+		if(!program.glarrays.normalMatrix) program.glarrays.normalMatrix=new WebGLFloatArray(normalMatrix);
+			else GLGE.mat4gl(normalMatrix,program.glarrays.normalMatrix);	
+		gl.uniformMatrix4fv(nUniform, false, program.glarrays.normalMatrix);
+		mvCache.camerMatrix=cameraMatrix;
+		mvCache.modelMatrix!=modelMatrix;
+		}catch(e){}
+	}
+	
+	try{
 	var pUniform = GLGE.getUniformLocation(gl,program, "PMatrix");
-	gl.uniformMatrix4fv(pUniform, false, this.scene.camera.getProjectionMatrix().glData());
-    
-	//normalising matrix
-	var normalMatrix = mvMatrix.inverse();
-	normalMatrix = normalMatrix.transpose();
-	var nUniform = GLGE.getUniformLocation(gl,program, "uNMatrix");
-	try {
-		gl.uniformMatrix4fv(nUniform, false, normalMatrix.glData());
-	}
-	catch(e) {}
-    
+	if(!program.glarrays.pMatrix) program.glarrays.pMatrix=new WebGLFloatArray(gl.scene.camera.getProjectionMatrix());
+			else GLGE.mat4gl(gl.scene.camera.getProjectionMatrix(),program.glarrays.pMatrix);	
+	gl.uniformMatrix4fv(pUniform, true, program.glarrays.pMatrix);
+	}catch(e){}
+	
 	//light
-	var pos,lpos;
-	for (var i = 0; i < this.scene.lights.length; i++) {
-		pos = camMat.x(this.scene.lights[i].getModelMatrix()).x([0, 0, 0]);
-		gl.uniform3f(GLGE.getUniformLocation(gl, program, "lightpos" + i), pos.e(1), pos.e(2), pos.e(3));
-		
-		lpos = camMat.x(this.scene.lights[i].getModelMatrix()).x([0, 0, 1]);
-		gl.uniform3f(GLGE.getUniformLocation(gl, program, "lightdir" + i), lpos.e(1) - pos.e(1), lpos.e(2) - pos.e(2), lpos.e(3) - pos.e(3));
-		try {
-			gl.uniformMatrix4fv(GLGE.getUniformLocation(gl, program, "lightmat" + i), false, this.scene.lights[i].getModelMatrix().inverse().x(this.getModelMatrix()).glData());
-		} 
-		catch (e) {}
+	//dont' need lighting for picking
+	if(renderType!=GLGE.RENDER_PICK){
+		var pos,lpos;
+		var lights=gl.lights
+		if(!program.caches.lights) program.caches.lights=[];
+		if(!program.glarrays.lights) program.glarrays.lights=[];
+		if(!this.caches.lights) this.caches.lights=[];
+		var lightCache=program.caches.lights;
+		for(var i=0; i<lights.length;i++){
+			if(!lightCache[i]) lightCache[i]={modelMatrix:null,cameraMatrix:null};
+			if(lightCache[i].modelMatrix!=modelMatrix || lightCache[i].cameraMatrix!=cameraMatrix){
+				if(!this.caches.lights[i])this.caches.lights[i]={};
+				
+				if(!this.caches.lights[i].pos) this.caches.lights[i].pos=GLGE.mulMat4Vec4(GLGE.mulMat4(cameraMatrix,lights[i].getModelMatrix()),[0,0,0,1]);
+				pos=this.caches.lights[i].pos;
+				gl.uniform3f(GLGE.getUniformLocation(gl,program, "lightpos"+i), pos[0],pos[1],pos[2]);		
+				
+				
+				if(!this.caches.lights[i].lpos) this.caches.lights[i].lpos=GLGE.mulMat4Vec4(GLGE.mulMat4(cameraMatrix,lights[i].getModelMatrix()),[0,0,1,1]);
+				lpos=this.caches.lights[i].lpos;
+				
+				gl.uniform3f(GLGE.getUniformLocation(gl,program, "lightdir"+i),lpos[0]-pos[0],lpos[1]-pos[1],lpos[2]-pos[2]);
+				
+				if(!this.caches.lights[i].lightmat) this.caches.lights[i].lightmat=GLGE.mulMat4(GLGE.inverseMat4(lights[i].getModelMatrix()),this.getModelMatrix());
+
+				try{
+				if(!program.glarrays.lights[i]) program.glarrays.lights[i]=new WebGLFloatArray(this.caches.lights[i].lightmat);
+					else GLGE.mat4gl(this.caches.lights[i].lightmat,program.glarrays.lights[i]);
+				gl.uniformMatrix4fv(GLGE.getUniformLocation(gl,program, "lightmat"+i), false,program.glarrays.lights[i]);
+				lightCache[i].modelMatrix=modelMatrix;
+				lightCache[i].cameraMatrix=invBind;
+				}catch(e){}
+				
+			}
+		}
 	}
-       
-	//set bone transforms
-	var boneUniform;
-	var transforms={};
-	if(this.action && this.skeleton){
-		transforms=this.getBoneTransforms();
+	
+	if(this.mesh.joints){
+		if(!program.caches.joints) program.caches.joints=[];
+		if(!program.glarrays.joints) program.glarrays.joints=[];
+		if(!program.glarrays.jointsinv) program.glarrays.jointsinv=[];
+		var jointCache=program.caches.joints;
+			var ident=GLGE.identMatrix();
+			for(i=0;i<this.mesh.joints.length;i++){
+			if(!jointCache[i]) jointCache[i]={modelMatrix:null,invBind:null};
+			var modelMatrix=this.mesh.joints[i].getModelMatrix();
+			var invBind=this.mesh.invBind[i];
+			if(jointCache[i].modelMatrix!=modelMatrix || jointCache[i].invBind!=invBind){
+				try{
+						var jointmat=GLGE.mulMat4(modelMatrix,invBind);
+						if(!program.glarrays.joints[i]) program.glarrays.joints[i]=new WebGLFloatArray(jointmat);
+							else GLGE.mat4gl(jointmat,program.glarrays.joints[i]);		
+						if(!program.glarrays.jointsinv[i]) program.glarrays.jointsinv[i]=new WebGLFloatArray(GLGE.inverseMat4(jointmat));
+							else GLGE.mat4gl(jointmat,program.glarrays.jointsinv[i]);						
+						gl.uniformMatrix4fv(GLGE.getUniformLocation(gl,program, "jointMat["+i+"]"), true,program.glarrays.joints[i]);
+						gl.uniformMatrix4fv(GLGE.getUniformLocation(gl,program, "jointNMat["+i+"]"), false,program.glarrays.jointsinv[i]);
+						jointCache[i].modelMatrix=modelMatrix;
+						jointCache[i].invBind=invBind;
+				}catch(e){}
+			}
+		}
 	}
-	for(var i=0; i<this.mesh.boneWeights.length; i++){
-		if(!transforms[this.mesh.boneWeights[i].boneName]) transforms[this.mesh.boneWeights[i].boneName]={matrix:GLGE.identMatrix()};
-		
-		boneUniform = GLGE.getUniformLocation(gl,program, this.mesh.boneWeights[i].boneName+"Matrix");
-		gl.uniformMatrix4fv(boneUniform, false, transforms[this.mesh.boneWeights[i].boneName].matrix.glData());
-        
-		boneUniform = GLGE.getUniformLocation(gl,program, this.mesh.boneWeights[i].boneName+"nMatrix");
-		gl.uniformMatrix4fv(boneUniform, false, transforms[this.mesh.boneWeights[i].boneName].matrix.inverse().transpose().glData());
-	}
+
     
-	if(this.material && renderType==GLGE.RENDER_DEFAULT) this.material.textureUniforms(gl,program,this.scene.lights);
-	//this.material.textureUniforms(gl,program,this.scene.lights);
+	if(this.material && renderType==GLGE.RENDER_DEFAULT) this.material.textureUniforms(gl,program,lights);
 }
 /**
 * Renders the object to the screen
 * @private
 */
-GLGE.Object.prototype.GLRender=function(gl,renderType){
+GLGE.Object.prototype.GLRender=function(gl,renderType,pickindex){
+	if(!this.gl) this.GLInit(gl);
+	
 	//if look at is set then look
 	if(this.lookAt) this.Lookat(this.lookAt);
  
 	//animate this object
-	if(renderType==GLGE.RENDER_DEFAULT) if(this.animation) this.animate();
+	if(renderType==GLGE.RENDER_DEFAULT){
+		if(this.animation) this.animate();
+	}
+	this.caches={};
+	
+	
 
 	for(var i=0; i<this.multimaterials.length;i++){
 		if(this.multimaterials[i].mesh){
@@ -2794,7 +2968,7 @@ GLGE.Object.prototype.GLRender=function(gl,renderType){
 					this.mesh.GLAttributes(gl,this.GLShaderProgramPick);
 					break;
 			}
-			this.GLUniforms(gl,renderType);
+			this.GLUniforms(gl,renderType,pickindex);
 			
 			gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.mesh.GLfaces);
 			gl.drawElements(gl.TRIANGLES, this.mesh.GLfaces.numItems, gl.UNSIGNED_SHORT, 0);
@@ -2819,14 +2993,85 @@ GLGE.Mesh=function(uid){
 	this.objects=[];
 }
 GLGE.Mesh.prototype.gl=null;
+GLGE.Mesh.prototype.className="Mesh";
 GLGE.Mesh.prototype.GLbuffers=null;
 GLGE.Mesh.prototype.buffers=null;
 GLGE.Mesh.prototype.setBuffers=null;
 GLGE.Mesh.prototype.GLfaces=null;
 GLGE.Mesh.prototype.faces=null;
-GLGE.Mesh.prototype.boneWeights=null;
 GLGE.Mesh.prototype.UV=null;
 GLGE.Mesh.prototype.objects=null;
+GLGE.Mesh.prototype.joints=null;
+GLGE.Mesh.prototype.invBind=null;
+/**
+* Sets the joints
+* @param {string[]} jsArray set joint objects
+*/
+GLGE.Mesh.prototype.setJoints=function(jsArray){
+	this.joints=jsArray;
+}
+/**
+* Sets the inverse bind matrix for each joint
+* @param {GLGE.Matrix[]} jsArray set joint names
+*/
+GLGE.Mesh.prototype.setInvBindMatrix=function(jsArray){
+	this.invBind=jsArray;
+}
+/**
+* Sets the joint channels for each vertex 
+* @param {Number[]} jsArray The 1 dimentional array of bones
+* @param {Number} num the number of chanels in this mesh
+*/
+GLGE.Mesh.prototype.setVertexJoints=function(jsArray,num){
+	if(num<4){
+		this.setBuffer("joints1",jsArray,num);
+	}else{
+		var jsArray1=[];
+		var jsArray2=[];
+		for(var i=0;i<jsArray.length;i++){
+			if(i%num<4){
+				jsArray1.push(jsArray[i]);
+			}else{
+				jsArray2.push(jsArray[i]);
+			}
+		}
+		this.setBuffer("joints1",jsArray1,4);
+		this.setBuffer("joints2",jsArray2,num%4);
+	}
+}
+/**
+* Sets the joint weights on each vertex
+* @param {Number[]} jsArray The 1 dimentional array of weights
+* @param {Number} num the number of chanels in this mesh
+*/
+GLGE.Mesh.prototype.setVertexWeights=function(jsArray,num){
+	//normalize the weights!
+	for(var i=0;i<jsArray.length;i=i+parseInt(num)){
+		var total=0;
+		for(var n=0;n<num;n++){
+			total+=parseFloat(jsArray[i+n]);
+		}
+		for(var n=0;n<num;n++){
+			jsArray[i+n]=jsArray[i+n]/total;
+		}
+	}
+
+	if(num<4){
+		this.setBuffer("weights1",jsArray,num);
+	}else{
+		var jsArray1=[];
+		var jsArray2=[];
+		for(var i=0;i<jsArray.length;i++){
+			if(i%num<4){
+				jsArray1.push(jsArray[i]);
+			}else{
+				jsArray2.push(jsArray[i]);
+			}
+		}
+		this.setBuffer("weights1",jsArray1,4);
+		this.setBuffer("weights2",jsArray2,num%4);
+	}
+}
 /**
 * Set the UV coord for the first UV layer
 * @param {Number[]} jsArray the UV coords in a 1 dimentional array
@@ -2856,41 +3101,6 @@ GLGE.Mesh.prototype.setUV2=function(jsArray){
 		idx=idx+4;
 	}
 	this.setBuffer("UV",this.UV,4);
-}
-/**
-* Sets the bone weights for a perticular bone
-* @param {String} boneName The name of the bone
-* @param {Number[]} jsArray The 1 dimentional array of weights
-*/
-GLGE.Mesh.prototype.addBoneWeights=function(boneName,jsArray){
-	var bone={};
-	bone.boneName=boneName;
-	bone.weights=jsArray;
-	this.boneWeights.push(bone);
-    
-	var weights;
-	var cnt=0;
-	for(var i=0; i<this.boneWeights.length; i=i+4){
-		weights=[];
-		size=1;
-		for(var n=0; n<this.boneWeights[i].weights.length;n++){
-			weights.push(this.boneWeights[i].weights[n]);
-			if(this.boneWeights[i+1]){
-				size=2;
-				weights.push(this.boneWeights[i+1].weights[n]);
-			}
-			if(this.boneWeights[i+2]){
-				size=3;
-				weights.push(this.boneWeights[i+2].weights[n]);
-			}
-			if(this.boneWeights[i+3]){
-				size=4;
-				weights.push(this.boneWeights[i+3].weights[n]);
-			}
-		}
-		this.setBuffer("bones"+cnt,weights,size);
-		cnt++;
-	}
 }
 /**
 * Sets the positions of the verticies
@@ -2964,30 +3174,30 @@ GLGE.Mesh.prototype.setFaces=function(jsArray){
 			
 
    
-			var tangent=new GLGE.Vec([p21[0]*uv31[1]-p31[0]*uv21[01],
+			var tangent=GLGE.toUnitVec3([p21[0]*uv31[1]-p31[0]*uv21[01],
 								p21[1]*uv31[1]-p31[1]*uv21[1],
-								p21[2]*uv31[1]-p31[2]*uv21[1]]).toUnitVector();		
+								p21[2]*uv31[1]-p31[2]*uv21[1]]);		
 								
 			var cp = uv21[1] * uv31[0] - uv21[0] * uv31[1];
-			if ( cp != 0.0 ) tangent=tangent.mul(1/cp).toUnitVector();
+			if ( cp != 0.0 ) tangent=GLGE.toUnitVec3(GLGE.scaleVec3(tangent,1/cp));
 
 			if(data[[p1[0],p1[1],p1[2],n1[0],n1[1],n1[2]].join(",")]){
 				tang=data[[p1[0],p1[1],p1[2],n1[0],n1[1],n1[2]].join(",")];
-				tang.vec=tang.vec.mul(tang.weight).add(tangent).mul(1/(tang.weight));
+				tang.vec=GLGE.scaleVec3(GLGE.addVec3(GLGE.scaleVec3(tang.vec,tang.weight),tangent),1/(tang.weight));
 				tang.weight++;
 			}else{
 				data[[p1[0],p1[1],p1[2],n1[0],n1[1],n1[2]].join(",")]={vec:tangent,weight:1};
 			}
 			if(data[[p2[0],p2[1],p2[2],n2[0],n2[1],n2[2]].join(",")]){
 				tang=data[[p2[0],p2[1],p2[2],n2[0],n2[1],n2[2]].join(",")];
-				tang.vec=tang.vec.mul(tang.weight).add(tangent).mul(1/(tang.weight+1));
+				tang.vec=GLGE.scaleVec3(GLGE.addVec3(GLGE.scaleVec3(tang.vec,tang.weight),tangent),1/(tang.weight+1));
 				tang.weight++;
 			}else{
 				data[[p2[0],p2[1],p2[2],n2[0],n2[1],n2[2]].join(",")]={vec:tangent,weight:1};
 			}
 			if(data[[p3[0],p3[1],p3[2],n3[0],n3[1],n3[2]].join(",")]){
 				tang=data[[p3[0],p3[1],p3[2],n3[0],n3[1],n3[2]].join(",")];
-				tang.vec=tang.vec.mul(tang.weight).add(tangent).mul(1/(tang.weight+1));
+				tang.vec=GLGE.scaleVec3(GLGE.addVec3(GLGE.scaleVec3(tang.vec,tang.weight),tangent),1/(tang.weight+1));
 				tang.weight++;
 			}else{
 				data[[p3[0],p3[1],p3[2],n3[0],n3[1],n3[2]].join(",")]={vec:tangent,weight:1};
@@ -2998,9 +3208,9 @@ GLGE.Mesh.prototype.setFaces=function(jsArray){
 			var n1=[normal[i*3],normal[i*3+1],normal[i*3+2]];
 			t=data[[p1[0],p1[1],p1[2],n1[0],n1[1],n1[2]].join(",")].vec;
 			if(t){
-				tangentArray[i*3]=t.e(1);
-				tangentArray[i*3+1]=t.e(2);
-				tangentArray[i*3+2]=t.e(3);
+				tangentArray[i*3]=t[0];
+				tangentArray[i*3+1]=t[1];
+				tangentArray[i*3+2]=t[2];
 			}
 		}
 		this.setBuffer("tangent",tangentArray,3);
@@ -3033,6 +3243,7 @@ GLGE.Mesh.prototype.GLSetBuffer=function(gl,bufferName,jsArray,size){
 	gl.bufferData(gl.ARRAY_BUFFER, new WebGLFloatArray(jsArray), gl.STATIC_DRAW);
 	this.GLbuffers[bufferName].itemSize = size;
 	this.GLbuffers[bufferName].numItems = jsArray.length/size;
+	//alert(this.GLbuffers[bufferName].numItems);
 }
 /**
 * Sets the Attributes for this mesh
@@ -3101,6 +3312,7 @@ GLGE.Light=function(uid){
 }
 GLGE.augment(GLGE.Placeable,GLGE.Light);
 GLGE.augment(GLGE.Animatable,GLGE.Light);
+GLGE.Light.prototype.className="Light";
 /**
 * @constant 
 * @description Enumeration for an point light source
@@ -3328,6 +3540,16 @@ GLGE.Light.prototype.setType=function(type){
 	this.type=type;
 }
 /**
+* init for the rendering
+* @private
+*/
+GLGE.Light.prototype.GLInit=function(gl){	
+	this.gl=gl;
+	if(this.type==GLGE.L_SPOT && !this.texture){
+		this.createSpotBuffer(gl);
+	}
+}
+/**
 * Sets up the WebGL needed to render the depth map for this light source. Only used for spot lights which produce shadows
 * @private
 */
@@ -3375,6 +3597,7 @@ GLGE.Camera=function(uid){
 };
 GLGE.augment(GLGE.Placeable,GLGE.Camera);
 GLGE.augment(GLGE.Animatable,GLGE.Camera);
+GLGE.Camera.prototype.className="Camera";
 GLGE.Camera.prototype.fovy=35;
 GLGE.Camera.prototype.aspect=1.0;
 GLGE.Camera.prototype.near=0.1;
@@ -3551,8 +3774,9 @@ GLGE.Camera.prototype.setProjectionMatrix=function(projection){
 GLGE.Camera.prototype.updateMatrix=function(){
 	var position=this.getPosition();
 	var vMatrix=GLGE.translateMatrix(position.x,position.y,position.z);
-	vMatrix=vMatrix.x(this.getRotMatrix());
-	this.matrix=vMatrix.inverse();
+	vMatrix=GLGE.mulMat4(vMatrix,this.getRotMatrix());
+	if(this.parent) vMatrix=GLGE.mulMat4(this.parent.getModelMatrix(),vMatrix);
+	this.matrix=GLGE.inverseMat4(vMatrix);
 };
 /**
 * Method generates the cameras view matrix
@@ -3587,18 +3811,15 @@ GLGE.FOG_QUADRATIC=3;
 */
 GLGE.Scene=function(uid){
 	GLGE.Assets.registerAsset(this,uid);
-	this.objects=[];
-	this.groups=[];
-	this.lights=[];
+	this.children=[];
 	this.camera=new GLGE.Camera();
 	this.backgroundColor={r:1,g:1,b:1};
 	this.ambientColor={r:0,g:0,b:0};
 	this.fogColor={r:0.5,g:0.5,b:0.5};
 }
+GLGE.augment(GLGE.Group,GLGE.Scene);
 GLGE.Scene.prototype.camera=null;
-GLGE.Scene.prototype.objects=null;
-GLGE.Scene.prototype.groups=null;
-GLGE.Scene.prototype.lights=null;
+GLGE.Scene.prototype.className="Scene";
 GLGE.Scene.prototype.renderer=null;
 GLGE.Scene.prototype.backgroundColor=null;
 GLGE.Scene.prototype.fogColor=null;
@@ -3727,42 +3948,11 @@ GLGE.Scene.prototype.setAmbientColorB=function(value){
 }
 
 /**
-* Gets an array of all the object in the scene
-* @returns {GLGE.Object[]} An array of objects
-*/
-GLGE.Scene.prototype.getObjects=function(){	
-	return this.objects;
-}
-/**
-* Gets an array of root objects and groups
-* @returns {GLGE.Object[]} An array of objects
-*/
-GLGE.Scene.prototype.getRoots=function(){
-    var roots=[];
-    for(var i=0; i<this.objects.length;i++){
-        if(!this.objects[i].parent){
-            roots.push(this.objects[i]);
-        }
-    }
-    for(var i=0; i<this.groups.length;i++){
-        if(!this.groups[i].parent || this.groups[i].parent.type==GLGE.G_ROOT){
-            roots.push(this.groups[i]);
-        }
-    }
-    return roots;
-}
-/**
-* Gets an array of all the light sources in the scene
-* @returns {GLGE.Lights[]} An array of lights
-*/
-GLGE.Scene.prototype.getLights=function(){	
-	return this.lights;
-}
-/**
 * Sets the active camera for this scene
 * @property {GLGE.Camera} object The object to be added
 */
 GLGE.Scene.prototype.setCamera=function(camera){	
+	if(typeof camera=="string")  camera=GLGE.Assets.get(camera);
 	this.camera=camera;
 }
 /**
@@ -3773,73 +3963,27 @@ GLGE.Scene.prototype.getCamera=function(){
 	return this.camera;
 }
 /**
-* Adds an object to the scene
-* @property {GLGE.Object} object The object to be added
-* @returns {Number} The index of the added object
-*/
-GLGE.Scene.prototype.addObject=function(object){	
-	object.scene=this;
-	//set the scene index for picking
-	object.sceneIndex=this.objects.length;
-	this.objects.push(object);
-	if(this.renderer) object.GLInit(this.renderer.gl);
-	return this.objects.length-1;
-}
-//alias to add text
-GLGE.Scene.prototype.addText=GLGE.Scene.prototype.addObject;
-/**
-* Adds a group to the scene
-* @property {GLGE.Object} object The group to be added
-*/
-GLGE.Scene.prototype.addGroup=function(object){
-	this.groups.push(object);
-	object.scene=this;
-	var subs=object.getObjects();	
-	for(var i=0;i<subs.length;i++){
-		this.addObject(subs[i]);
-	}
-
-};
-/**
-* Adds a light source to the scene
-* @property {GLGE.Light} light The light to be added
-* @returns {Number} The index of the added light
-*/
-GLGE.Scene.prototype.addLight=function(light){	
-	light.scene=this;
-	this.lights.push(light);
-	if(this.renderer && light.type==GLGE.L_SPOT && !light.texture){
-		light.createSpotBuffer(this.renderer.gl);
-	}
-}
-/**
 * used to initialize all the WebGL buffers etc need for this scene
 * @private
 */
-GLGE.Scene.prototype.init=function(){
+GLGE.Scene.prototype.GLInit=function(gl){
+	this.gl=gl;
+	gl.lights=this.getLights();
 	//sets the camera aspect to same aspect as the canvas
 	this.camera.setAspect(this.renderer.canvas.width/this.renderer.canvas.height);
 
-	this.createPickBuffer(this.renderer.gl);
+	this.createPickBuffer(gl);
 	this.renderer.gl.clearColor(this.backgroundColor.r, this.backgroundColor.g, this.backgroundColor.b, 1.0);
 	
-	//get objects to init
-	var initObject=this.objects;
-	
-	for(var i=0;i<initObject.length;i++){
-		initObject[i].GLInit(this.renderer.gl);
-	}
-	for(var i=0;i<this.lights.length;i++){
-		if(this.lights[i].type==GLGE.L_SPOT && !this.lights[i].texture){
-			this.lights[i].createSpotBuffer(this.renderer.gl);
-		}
+	for(var i=0;i<this.children;i++){
+		if(this.children[i].GLInit) children[i].GLInit(gl);
 	}
 }
 /**
 * used to clean up all the WebGL buffers etc need for this scene
 * @private
 */
-GLGE.Scene.prototype.destory=function(gl){
+GLGE.Scene.prototype.GLDestroy=function(gl){
 }
 /**
 * renders the scene
@@ -3849,23 +3993,27 @@ GLGE.Scene.prototype.render=function(gl){
 	//if look at is set then look
 	if(this.camera.lookAt) this.camera.Lookat(this.camera.lookAt);	
 	
-	//animate groups
-	for(var i=0;i<this.groups.length;i++) if(this.groups[i].animation) this.groups[i].animate();
+	this.animate();
 	
+	var lights=gl.lights;
+	gl.scene=this;
+	
+	var renderObject=this.getObjects();
 	//shadow stuff
-	for(var i=0; i<this.lights.length;i++){
-		if(this.lights[i].castShadows){
-			gl.bindFramebuffer(gl.FRAMEBUFFER, this.lights[i].frameBuffer);
-			gl.viewport(0,0,this.lights[i].bufferWidth,this.lights[i].bufferHeight);
+	for(var i=0; i<lights.length;i++){
+		if(lights[i].castShadows){
+			if(!lights[i].gl) lights[i].GLInit();
+			gl.bindFramebuffer(gl.FRAMEBUFFER, lights[i].frameBuffer);
+			gl.viewport(0,0,lights[i].bufferWidth,lights[i].bufferHeight);
 			gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 			var cameraMatrix=this.camera.matrix;
 			var cameraPMatrix=this.camera.getProjectionMatrix();
 			this.camera.setProjectionMatrix(this.lights[i].getPMatrix());
-			this.camera.matrix=this.lights[i].getModelMatrix().inv();
+			this.camera.matrix=lights[i].getModelMatrix().inv();
 			
 			//draw shadows
-			for(var n=0; n<this.objects.length;n++){
-				if(!this.objects[n].zTrans) this.objects[n].GLRender(this.renderer.gl, GLGE.RENDER_SHADOW);
+			for(var n=0; n<renderObject.length;n++){
+				renderObject[i].GLRender(gl, GLGE.RENDER_SHADOW);
 			}
 			gl.flush();
 			this.camera.matrix=cameraMatrix;
@@ -3877,26 +4025,19 @@ GLGE.Scene.prototype.render=function(gl){
 
         gl.viewport(0,0,this.renderer.canvas.width,this.renderer.canvas.height);
 
-	
-	var renderObject=this.objects;
 	//original stuff
 	gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 	if(this.camera.animation) this.camera.animate();
-	for(var i=0;i<this.lights.length;i++){
-		if(this.lights[i].animation) this.lights[i].animate();
-	}
-	this.renderer.gl.disable(this.renderer.gl.BLEND);
+	gl.disable(gl.BLEND);
 	var transObjects=[];
 	for(var i=0; i<renderObject.length;i++){
-		if(!renderObject[i].zTrans) renderObject[i].GLRender(this.renderer.gl,GLGE.RENDER_DEFAULT);
+		if(!renderObject[i].zTrans) renderObject[i].GLRender(gl,GLGE.RENDER_DEFAULT);
 			else transObjects.push(i)
 	}
-	this.renderer.gl.enable(this.renderer.gl.BLEND);
+	gl.enable(gl.BLEND);
 	for(var i=0; i<transObjects.length;i++){
-		renderObject[transObjects[i]].GLRender(this.renderer.gl, GLGE.RENDER_DEFAULT);
+		renderObject[transObjects[i]].GLRender(gl, GLGE.RENDER_DEFAULT);
 	}
-	
-	
 	
 }
 /**
@@ -3911,21 +4052,72 @@ GLGE.Scene.prototype.createPickBuffer=function(gl){
 
     //TODO update when null is accepted
     try {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, null);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 4, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     } catch (e) {
-        var tex = new WebGLUnsignedByteArray(3);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, tex);
+        var tex = new WebGLUnsignedByteArray(4*1*4);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 4,1, 0, gl.RGBA, gl.UNSIGNED_BYTE, tex);
     }
     
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framePickBuffer);
     gl.bindRenderbuffer(gl.RENDERBUFFER, this.renderPickBuffer);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT, 1, 1);
-    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT,4, 1);
     
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.pickTexture, 0);
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.renderPickBuffer);
+    
+    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
 }
+/**
+* ray query from origin in the given direction
+* @param origin the source of the ray
+* @param direction the direction of the ray
+*/
+GLGE.Scene.prototype.ray=function(origin,direction){
+
+		var gl=this.renderer.gl;
+		var origmatrix=this.camera.matrix;	
+		var origpmatrix=this.camera.pMatrix;
+		
+		this.camera.matrix=GLGE.inverseMat4(GLGE.Mat4([direction[2], direction[1], direction[0], origin[0],
+									direction[0], direction[2], direction[1], origin[1],
+									direction[1], direction[0], direction[2], origin[2],
+									0, 0, 0, 1]));
+
+		if(!this.pickPMatrix)	this.pickPMatrix=GLGE.makeOrtho(-0.0001,0.0001,-0.0001,0.0001,this.camera.near,this.camera.far);
+		this.camera.pMatrix=this.pickPMatrix;
+
+		gl.viewport(0,0,4,1);
+		//gl.bindFramebuffer(gl.FRAMEBUFFER, this.framePickBuffer); <-TODO: uncomment when fixed, bit of a cheet using pixels in corner of canvas atm!! there seems to be a bug in all browsers that prevents you retriving the pixels from a render buffer if it's bigger then 1x1 :-s
+		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+		gl.disable(gl.BLEND);
+		gl.scene=this;
+		var objects=this.getObjects();
+		for(var i=0; i<objects.length;i++){
+			objects[i].GLRender(gl,GLGE.RENDER_PICK,i+1);
+		}
+		gl.flush();
+		var data=gl.readPixels(0, 0, 4, 1, gl.RGBA, gl.UNSIGNED_BYTE);
+		//TODO: firefox hack :-( remove when fixed!
+		if(data.data) data=data.data;
+		var norm=[data[4]/255,data[5]/255,data[6]/255];
+		var normalsize=Math.sqrt(norm[0]*norm[0]+norm[1]*norm[1]+norm[2]*norm[2])*0.5;
+		norm=[norm[0]/normalsize-1,norm[1]/normalsize-1,norm[2]/normalsize-1];
+		var obj=objects[data[0]+data[1]*256+data[2]*65536-1];
+		
+		var dist=(data[8]/255+0.00390625*data[9]/255+0.0000152587890625*data[10]/255+0.000000059604644775390625*data[11]/255)*this.camera.far;
+		
+		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+		gl.viewport(0,0,this.renderer.canvas.width,this.renderer.canvas.height);
+		
+		//revert the view matrix
+		this.camera.matrix=origmatrix;	
+		this.camera.pMatrix=origpmatrix;
+		
+		return {object:obj,distance:dist,normal:norm};
+}
+
 /**
 * Picks and object from canvas coords
 * @param x the canvas x coord to pick
@@ -3936,61 +4128,19 @@ GLGE.Scene.prototype.pick=function(x,y){
 		GLGE.error("No camera set for picking");
 		return false;
 	}else if(this.camera.matrix && this.camera.pMatrix){
-		//get camera space coords
-		var origmatrix=this.camera.matrix;	
-		var origpmatrix=this.camera.pMatrix;
 		xcoord =  -( ( ( 2 * x ) / this.renderer.canvas.width ) - 1 ) / this.camera.pMatrix.e(1,1);
 		ycoord =( ( ( 2 * y ) / this.renderer.canvas.height ) - 1 ) / this.camera.pMatrix.e(2,2);
 		zcoord =  1;
-		if(this.camera.type==GLGE.C_PERSPECTIVE){
-			var coord=[xcoord,ycoord,zcoord,0];
-			coord=this.camera.matrix.inverse().x(coord);
-			var cameraPos=this.camera.getPosition();
-			var zvec=coord.toUnitVector();
-			var xvec=(new GLGE.Vec([0,0,1])).cross(zvec).toUnitVector();
-			var yvec=zvec.cross(xvec).toUnitVector();				
-			this.camera.matrix=new GLGE.Mat([xvec.e(1), yvec.e(1), zvec.e(1), cameraPos.x,
-							xvec.e(2), yvec.e(2), zvec.e(2), cameraPos.y,
-							xvec.e(3), yvec.e(3), zvec.e(3), cameraPos.z,
-							0, 0, 0, 1]).inverse();
-		}
-		if(this.camera.type==GLGE.C_ORTHO){
-			this.camera.matrix=this.camera.matrix.inv().x(GLGE.translateMatrix(-xcoord,-ycoord,0)).inv();
-		}
-		this.camera.pMatrix=GLGE.makeOrtho(-0.0001,0.0001,-0.0001,0.0001,this.camera.near,this.camera.far);
-		//render for picking
-		var gl=this.renderer.gl;
-		gl.bindFramebuffer(gl.FRAMEBUFFER, this.framePickBuffer);
-		gl.viewport(0,0,1,1);
-		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-		this.renderer.gl.disable(this.renderer.gl.BLEND);
-
-		for(var i=0; i<this.objects.length;i++){
-			this.objects[i].GLRender(this.renderer.gl,GLGE.RENDER_PICK);
-		}
-		var data=gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE);
-		//TODO: firefox hack :-( remove when fixed!
-		if(data.data) data=data.data;
-		var index=data[0]+data[1]*256;
-		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-		gl.viewport(0,0,this.renderer.canvas.width,this.renderer.canvas.height);
-		
-		//revert the view matrix
-		this.camera.matrix=origmatrix;	
-		this.camera.pMatrix=origpmatrix;
-		
-		if(index>0){
-			return this.objects[index-1];
-		}else{
-			return false;
-		}
+		var coord=[xcoord,ycoord,zcoord,0];
+		coord=this.camera.matrix.inverse().x(coord);
+		var cameraPos=this.camera.getPosition();
+		var origin=[cameraPos.x,cameraPos.y,cameraPos.z];
+		return this.ray(origin,coord.data);
 		
 	}else{
 		return false;
 	}
 	
-
-
 }
 
 /**
@@ -4036,7 +4186,7 @@ GLGE.Renderer.prototype.scene=null;
 * Gets the scene which is set to be rendered
 * @returns the current render scene
 */
-GLGE.Renderer.prototype.getScene=function(gcene){
+GLGE.Renderer.prototype.getScene=function(){
 	return this.scene;
 };
 /**
@@ -4046,7 +4196,7 @@ GLGE.Renderer.prototype.getScene=function(gcene){
 GLGE.Renderer.prototype.setScene=function(scene){
 	scene.renderer=this;
 	this.scene=scene;
-	scene.init();
+	scene.GLInit(this.gl);
 };
 /**
 * Renders the current scene to the canvas
@@ -4061,7 +4211,28 @@ GLGE.Renderer.prototype.render=function(){
 * @param {string} url the url of the image to use as the texture
 * @see GLGE.Material
 */
-GLGE.Texture=function(url){
+GLGE.Texture=function(uid){
+	GLGE.Assets.registerAsset(this,uid);
+}
+GLGE.Texture.prototype.className="Texture";
+GLGE.Texture.prototype.image=null;
+GLGE.Texture.prototype.texture=null;
+GLGE.Texture.prototype.glTexture=null;
+GLGE.Texture.prototype.url=null;
+/**
+* Gets the textures used by the layer
+* @return {string} The textures image url
+*/
+GLGE.Texture.prototype.getSrc=function(){
+	return this.url;
+};
+
+/**
+* Sets the textures image location
+* @param {string} url the texture image url
+*/
+GLGE.Texture.prototype.setSrc=function(url){
+	this.url=url;
 	this.image=new Image();
 	this.image.texture=this;
 	this.image.onload = function(){
@@ -4070,10 +4241,7 @@ GLGE.Texture=function(url){
 	this.image.src=url;	
 	this.state=0;
 	this.glTexture=null;
-}
-GLGE.Texture.prototype.image=null;
-GLGE.Texture.prototype.texture=null;
-GLGE.Texture.prototype.glTexture=null;
+};
 
 
 /**
@@ -4086,26 +4254,12 @@ GLGE.Texture.prototype.glTexture=null;
 * @see GLGE.Material
 * @augments GLGE.Animatable
 */
-GLGE.MaterialLayer=function(texture,mapto,mapinput,scale,offset){
-	this.texture=texture;
-	this.mapinput=mapinput;
-	this.uv=mapinput;
+GLGE.MaterialLayer=function(uid){
+	GLGE.Assets.registerAsset(this,uid);
 	this.blendMode=GLGE.BL_MIX;
-	this.mapto=mapto;
-	if(scale){
-		this.setScaleX(scale.x);
-		this.setScaleY(scale.y);
-		this.setScaleZ(scale.z);
-	}
-	if(offset){
-		this.setOffsetX(offset.x);
-		this.setOffsetY(offset.y);
-		this.setOffsetZ(offset.z);
-	}
-	this.scale=scale;
-	this.offset=offset;
 };
 GLGE.augment(GLGE.Animatable,GLGE.MaterialLayer);
+GLGE.MaterialLayer.prototype.className="MaterialLayer";
 GLGE.MaterialLayer.prototype.texture=null;
 GLGE.MaterialLayer.prototype.blendMode=null;
 GLGE.MaterialLayer.prototype.mapto=GLGE.M_COLOR;
@@ -4139,7 +4293,7 @@ GLGE.MaterialLayer.prototype.getMatrix=function(){
 		var offset=this.getOffset();
 		var scale=this.getScale();
 		var rotation=this.getRotation();
-		this.matrix=GLGE.translateMatrix(offset.x,offset.y,offset.z).x(GLGE.scaleMatrix(scale.x,scale.y,scale.z).x(GLGE.rotateMatrix(rotation.x,rotation.y,rotation.z)));
+		this.matrix=GLGE.mulMat4(GLGE.mulMat4(GLGE.translateMatrix(offset.x,offset.y,offset.z),GLGE.scaleMatrix(scale.x,scale.y,scale.z)),GLGE.rotateMatrix(rotation.x,rotation.y,rotation.z));
 	}
 	return this.matrix;
 };
@@ -4149,6 +4303,7 @@ GLGE.MaterialLayer.prototype.getMatrix=function(){
 * @param {GLGE.Texture} value the teture to associate with this layer
 */
 GLGE.MaterialLayer.prototype.setTexture=function(value){
+	if(typeof value=="string")  value=GLGE.Assets.get(value);
 	this.texture=value;
 };
 /**
@@ -4639,6 +4794,7 @@ GLGE.BL_MIX=0;
 GLGE.BL_MUL=1;
 	
 GLGE.Material.prototype.layers=null;
+GLGE.Material.prototype.className="Material";
 GLGE.Material.prototype.textures=null;
 GLGE.Material.prototype.color=null;
 GLGE.Material.prototype.specColor=null;
@@ -4795,6 +4951,7 @@ GLGE.Material.prototype.getReflectivity=function(){
 * @returns {Number} index of the added layer
 */
 GLGE.Material.prototype.addMaterialLayer=function(layer){
+	if(typeof layer=="string")  layer=GLGE.Assets.get(layer);
 	this.layers.push(layer);
 	return this.layers.length-1;
 };
@@ -4968,6 +5125,7 @@ GLGE.Material.prototype.getFragmentShader=function(lights){
 	
 		if(tangent){
 			shader=shader+"lightvec=tlightvec"+i+"*vec3(-1.0,-1.0,1.0);\n";  
+			shader=shader+"normal.z=(normal.z+1.0)/2.0;\n";  
 			shader=shader+"viewvec=teyevec*vec3(-1.0,-1.0,1.0);\n";  
 		}else{
 			shader=shader+"lightvec=lightvec"+i+";\n";  
@@ -4981,11 +5139,13 @@ GLGE.Material.prototype.getFragmentShader=function(lights){
 			if(lights[i].diffuse){
 				shader=shader+"lightvalue += att * dotN * lightcolor"+i+";\n";
 			}
-			shader=shader+"}\n";
-			
 			if(lights[i].specular){
 				shader=shader+"specvalue += att * specC * lightcolor"+i+" * spec  * pow(max(dot(reflect(normalize(lightvec), normal),normalize(viewvec)),0.0), sh);\n";
 			}
+			
+			shader=shader+"}\n";
+			
+			
 		}
 		shader=shader+"spotEffect = 0.0;\n";
 		if(lights[i].type==GLGE.L_SPOT){
@@ -4998,7 +5158,7 @@ GLGE.Material.prototype.getFragmentShader=function(lights){
 				shader=shader+"spotCoords=lightmat"+i+"*vec4(OBJCoord,1.0);";
 				shader=shader+"spotCoords=(vec4(spotCoords.xy/(spotCoords.z*tan(acos(spotCosCutOff"+i+"))),0.0,1.0)/2.0)-0.5;";
 				shader=shader+"vec4 dist = texture2D(TEXTURE"+shadowlights[i]+", -spotCoords.xy);";
-				shader=shader+"float depth = dot(dist, vec4(1.0, 0.00390625, 0.0000152587890625, 0.000000059604644775390625))*1000.0;\n";
+				shader=shader+"float depth = dot(dist, vec4(1.0, 0.00390625, 0.0000152587890625, 0.000000059604644775390625))*far;\n";
 				shader=shader+"if(depth*shadowbias"+i+"<length(lightvec"+i+")){";
 				shader=shader+"spotEffect=0.0;";
 				shader=shader+"}\n";
@@ -5032,9 +5192,10 @@ GLGE.Material.prototype.getFragmentShader=function(lights){
 	shader=shader+"if(fogtype=="+GLGE.FOG_LINEAR+") fogfact=clamp((fogfar - length(eyevec)) / (fogfar - fognear),0.0,1.0);\n";
 	
 	shader=shader+"lightvalue = (lightvalue)*ref;\n";
-	shader=shader+"if(em>0.0) lightvalue=vec3(1.0,1.0,1.0);\n";
+	shader=shader+"if(em>0.0){lightvalue=vec3(1.0,1.0,1.0);  fogfact=1.0;}\n";
 	shader=shader+"gl_FragColor =vec4(specvalue.rgb+color.rgb*(em+1.0)*lightvalue.rgb,al)*fogfact+vec4(fogcolor,al)*(1.0-fogfact);\n";
-	//shader=shader+"gl_FragColor =vec4(normal,1.0);\n";
+	//shader=shader+"gl_FragColor =vec4(texture2D(TEXTURE2, textureCoords).rgb,al);\n";
+
 	
 	shader=shader+"}\n";
 	return shader;
@@ -5045,13 +5206,34 @@ GLGE.Material.prototype.getFragmentShader=function(lights){
 */
 GLGE.Material.prototype.textureUniforms=function(gl,shaderProgram,lights){
 	if(this.animation) this.animate();
-	gl.uniform4f(GLGE.getUniformLocation(gl,shaderProgram, "baseColor"), this.color.r,this.color.g,this.color.b,this.color.a);
-	gl.uniform3f(GLGE.getUniformLocation(gl,shaderProgram, "specColor"), this.specColor.r,this.specColor.g,this.specColor.b);
-	gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "specular"), this.specular);
-	gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "shine"), this.shine);
-	gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "reflective"), this.reflect);
-	gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "emit"), this.emit);
-	gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "alpha"), this.alpha);
+	if(shaderProgram.caches.baseColor!=this.color){
+		gl.uniform4f(GLGE.getUniformLocation(gl,shaderProgram, "baseColor"), this.color.r,this.color.g,this.color.b,this.color.a);
+		shaderProgram.caches.baseColor=this.color;
+	}
+	if(shaderProgram.caches.specColor!=this.specColor){
+		gl.uniform3f(GLGE.getUniformLocation(gl,shaderProgram, "specColor"), this.specColor.r,this.specColor.g,this.specColor.b);
+		shaderProgram.caches.specColor=this.specColor;
+	}
+	if(shaderProgram.caches.specular!=this.specular){
+		gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "specular"), this.specular);
+		shaderProgram.caches.specular=this.specular;
+	}
+	if(shaderProgram.caches.shine!=this.shine){
+		gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "shine"), this.shine);
+		shaderProgram.caches.shine=this.shine;
+	}
+	if(shaderProgram.caches.reflect!=this.reflect){
+		gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "reflective"), this.reflect);
+		shaderProgram.caches.reflect=this.reflect;
+	}
+	if(shaderProgram.caches.emit!=this.emit){
+		gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "emit"), this.emit);
+		shaderProgram.caches.emit=this.emit;
+	}
+	if(shaderProgram.caches.alpha!=this.alpha){
+		gl.uniform1f(GLGE.getUniformLocation(gl,shaderProgram, "alpha"), this.alpha);
+		shaderProgram.caches.alpha=this.alpha;
+	}
 	var cnt=0;
 	var num=0;
 	for(var i=0; i<lights.length;i++){
@@ -5077,33 +5259,42 @@ GLGE.Material.prototype.textureUniforms=function(gl,shaderProgram,lights){
 			
 	}
 	
+	if(!shaderProgram.glarrays.layermat) shaderProgram.glarrays.layermat=[];
+	
+
+			
 	var scale,offset;
 	for(i=0; i<this.layers.length;i++){
 		if(this.layers[i].animation) this.layers[i].animate();
 		scale=this.layers[i].getScale();
 		offset=this.layers[i].getOffset();		
-		try {
-			gl.uniformMatrix4fv(GLGE.getUniformLocation(gl, shaderProgram, "layer" + i + "Matrix"), false, this.layers[i].getMatrix().glData());
-		} catch(e) {}
+		if(!shaderProgram.glarrays.layermat[i]) shaderProgram.glarrays.layermat[i]=new WebGLFloatArray(this.layers[i].getMatrix());
+			else GLGE.mat4gl(this.layers[i].getMatrix(),shaderProgram.glarrays.layermat[i]);	
+		
+		try{gl.uniformMatrix4fv(GLGE.getUniformLocation(gl,shaderProgram, "layer"+i+"Matrix"), true, shaderProgram.glarrays.layermat[i]);}catch(e){}
 	}
     
-
+	if(!shaderProgram.textures) shaderProgram.textures=[];
 	for(var i=0; i<this.textures.length;i++){
-		gl.activeTexture(gl["TEXTURE"+i]);
-		//create the texture if it's not already created
-		if(!this.textures[i].glTexture) this.textures[i].glTexture=gl.createTexture();
-		//if the image is loaded then set in the texture data
-		if(this.textures[i].state==1){
+		
+			gl.activeTexture(gl["TEXTURE"+i]);
+			//create the texture if it's not already created
+			if(!this.textures[i].glTexture) this.textures[i].glTexture=gl.createTexture();
+			//if the image is loaded then set in the texture data
+			if(this.textures[i].state==1){
+				gl.bindTexture(gl.TEXTURE_2D, this.textures[i].glTexture);
+				gl.texImage2D(gl.TEXTURE_2D, 0, this.textures[i].image,false,true);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+				gl.generateMipmap(gl.TEXTURE_2D);
+				gl.bindTexture(gl.TEXTURE_2D, null);
+				this.textures[i].state=2;
+				shaderProgram.textures[i]=true;
+			}
 			gl.bindTexture(gl.TEXTURE_2D, this.textures[i].glTexture);
-			gl.texImage2D(gl.TEXTURE_2D, 0, this.textures[i].image);
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-			gl.generateMipmap(gl.TEXTURE_2D);
-			gl.bindTexture(gl.TEXTURE_2D, null);
-			this.textures[i].state=2;
+		if(shaderProgram.textures[i]){
+			gl.uniform1i(GLGE.getUniformLocation(gl,shaderProgram, "TEXTURE"+i), i);
 		}
-		gl.bindTexture(gl.TEXTURE_2D, this.textures[i].glTexture);
-		gl.uniform1i(GLGE.getUniformLocation(gl,shaderProgram, "TEXTURE"+i), i);
 	}	
 	
 };
@@ -5113,6 +5304,7 @@ GLGE.Material.prototype.textureUniforms=function(gl,shaderProgram,lights){
 * @return {Number} index of the new texture
 */
 GLGE.Material.prototype.addTexture=function(texture){	
+	if(typeof texture=="string")  texture=GLGE.Assets.get(texture);
 	this.textures.push(texture);
 	texture.idx=this.textures.length-1;
 	return texture;

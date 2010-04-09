@@ -43,7 +43,7 @@ if(!GLGE){
 * @augments GLGE.Group
 */
 GLGE.Collada=function(){
-	this.objects=[];
+	this.children=[];
 };
 GLGE.augment(GLGE.Group,GLGE.Collada);
 GLGE.Collada.prototype.type=GLGE.G_NODE;
@@ -172,18 +172,21 @@ GLGE.Collada.prototype.getSource=function(id){
 			value=this.getSource(element.getElementsByTagName("input")[0].getAttribute("source").substr(1));
 		}else{
 			var accessor=element.getElementsByTagName("technique_common")[0].getElementsByTagName("accessor")[0];
-			value=this.parseArray(this.xml.getElementById(accessor.getAttribute("source").substr(1)));
+			var sourceArray=this.xml.getElementById(accessor.getAttribute("source").substr(1));
+			var type=sourceArray.tagName;
+			value=this.parseArray(sourceArray);
 			stride=parseInt(accessor.getAttribute("stride"));
 			offset=parseInt(accessor.getAttribute("offset"));
 			if(!offset) offset=0;
 			count=parseInt(accessor.getAttribute("count"));
 			var params=accessor.getElementsByTagName("param");
 			var pmask=[];
-			for(var i=0;i<params.length;i++){if(params[i].hasAttribute("name")) pmask.push(true); else pmask.push(false);}
-			value={array:value,stride:stride,offset:offset,count:count,pmask:pmask};
-		}
+			for(var i=0;i<params.length;i++){if(params[i].hasAttribute("name")) pmask.push({type:params[i].getAttribute("type"),name:params[i].getAttribute("name")}); else pmask.push(false);}
+			value={array:value,stride:stride,offset:offset,count:count,pmask:pmask,type:type};
+		}	
 		element.jsArray=value;
 	}
+	
 	return element.jsArray;
 };
 /**
@@ -191,11 +194,13 @@ GLGE.Collada.prototype.getSource=function(id){
 * @param {string} id id of the geomerty to parse
 * @private
 */
-GLGE.Collada.prototype.getMeshes=function(id){
+GLGE.Collada.prototype.getMeshes=function(id,skeletonData){
 	var i,n;
 	var mesh;
 	var inputs;
-	var inputArray;
+	var inputArray;		
+	var vertexJoints;
+	var vertexWeights;
 	var faces;
 	var outputData;
 	var block;
@@ -203,7 +208,6 @@ GLGE.Collada.prototype.getMeshes=function(id){
 	var rootNode=this.xml.getElementById(id);
 	var meshNode=rootNode.getElementsByTagName("mesh")[0];
 	var meshes=[];
-	
 	
 	//convert polylists to triangles my head hurts now :-(
 	var polylists=meshNode.getElementsByTagName("polylist");
@@ -243,6 +247,8 @@ GLGE.Collada.prototype.getMeshes=function(id){
 	for(i=0;i<triangles.length;i++){
 		//go though the inputs to get the data layout
 		inputs=triangles[i].getElementsByTagName("input");
+		vertexJoints=[];
+		vertexWeights=[];
 		inputArray=[];
 		outputData={};
 		for(n=0;n<inputs.length;n++){
@@ -260,7 +266,7 @@ GLGE.Collada.prototype.getMeshes=function(id){
 		//get the face data and push the data into the mesh
 		if(triangles[i].getElementsByTagName("p")[0].data) faces=triangles[i].getElementsByTagName("p")[0].data;
 			else faces=this.parseArray(triangles[i].getElementsByTagName("p")[0]);
-	
+
 		var pcnt;
 		for(j=0;j<faces.length;j=j+inputArray.length){
 			for(n=0;n<inputArray.length;n++){
@@ -272,6 +278,12 @@ GLGE.Collada.prototype.getMeshes=function(id){
 						pcnt++;
 					}
 				}
+				if(skeletonData && block=="VERTEX"){
+					for(k=0;k<skeletonData.count;k++){
+						vertexJoints.push(skeletonData.vertexJoints[faces[j+n]*skeletonData.count+k]);
+						vertexWeights.push(skeletonData.vertexWeight[faces[j+n]*skeletonData.count+k]);
+					}
+				}
 				//account for 1D and 2D
 				if(block=="VERTEX" && pcnt==1) outputData[block].push(0);
 				if(block=="VERTEX" && pcnt==2) outputData[block].push(0);
@@ -280,6 +292,7 @@ GLGE.Collada.prototype.getMeshes=function(id){
 				if(block=="TEXCOORD1" && pcnt==3) outputData[block].pop();
 			}
 		}
+
 		
 		//create faces array
 		faces=[];
@@ -290,6 +303,13 @@ GLGE.Collada.prototype.getMeshes=function(id){
 		trimesh.setNormals(outputData.NORMAL);
 		if(outputData.TEXCOORD0) trimesh.setUV(outputData.TEXCOORD0);
 		if(outputData.TEXCOORD1) trimesh.setUV2(outputData.TEXCOORD1);
+		if(skeletonData){
+			trimesh.setJoints(skeletonData.joints);
+			trimesh.setInvBindMatrix(skeletonData.inverseBindMatrix);
+			trimesh.setVertexJoints(vertexJoints,skeletonData.count);
+			trimesh.setVertexWeights(vertexWeights,skeletonData.count);
+		}
+		
 		trimesh.setFaces(faces);
 		trimesh.matName=triangles[i].getAttribute("material");
 		meshes.push(trimesh);
@@ -373,6 +393,26 @@ GLGE.Collada.prototype.getImage=function(id){
 }
 
 /**
+* creates a material layer
+* @private
+*/
+GLGE.Collada.prototype.createMaterialLayer=function(node,material,common,mapto){
+	var textureImage;
+	var imageid=this.getSurface(common,this.getSampler(common,node.getAttribute("texture")));
+	textureImage=this.getImage(imageid);
+	var texture=new GLGE.Texture();
+	texture.setSrc(textureImage);
+	material.addTexture(texture);
+	var layer=new GLGE.MaterialLayer();
+	layer.setTexture(texture);
+	layer.setMapto(mapto);
+	layer.setMapinput(GLGE.UV1);
+	if(node.getElementsByTagName("blend_mode")[0]) var blend=node.getElementsByTagName("blend_mode")[0].firstChild.nodeValue;
+	if(blend=="MULTIPLY")  layer.setBlendMode(GLGE.BL_MUL);
+	material.addMaterialLayer(layer);
+}
+
+/**
 * Gets the sampler for a texture
 * @param {string} id the id or the material element
 * @private
@@ -390,7 +430,6 @@ GLGE.Collada.prototype.getMaterial=function(id){
 	
 	var child;
 	var color;
-	var textureImage;
 	
 	//do diffuse color
 	var diffuse=technique.getElementsByTagName("diffuse");
@@ -402,19 +441,12 @@ GLGE.Collada.prototype.getMaterial=function(id){
 					color=child.firstChild.nodeValue.split(" ");
 					returnMaterial.setColor({r:color[0],g:color[1],b:color[2]});
 					break;
-                case "param":
-                    color=this.getFloat4(common,child.getAttribute("ref")).split(" ");
+				case "param":
+					color=this.getFloat4(common,child.getAttribute("ref")).split(" ");
 					returnMaterial.setColor({r:color[0],g:color[1],b:color[2]});
-                    break;
+					break;
 				case "texture":
-					var imageid=this.getSurface(common,this.getSampler(common,child.getAttribute("texture")));
-					textureImage=this.getImage(imageid);
-					if(child.getElementsByTagName("blend_mode")[0]) var blend=child.getElementsByTagName("blend_mode")[0].firstChild.nodeValue;
-					var texture=new GLGE.Texture(textureImage);
-					returnMaterial.addTexture(texture);
-					var layer=new GLGE.MaterialLayer(texture,GLGE.M_COLOR,GLGE.UV1);
-					if(blend=="MULTIPLY")  layer.setBlendMode(GLGE.BL_MUL);
-					returnMaterial.addMaterialLayer(layer);
+					this.createMaterialLayer(child,returnMaterial,common,GLGE.M_COLOR);
 					break;
 			}
 		}while(child=child.nextSibling);
@@ -427,11 +459,7 @@ GLGE.Collada.prototype.getMaterial=function(id){
 		do{
 			switch(child.tagName){
 				case "texture":
-					var imageid=this.getSurface(common,this.getSampler(common,child.getAttribute("texture")));
-					textureImage=this.getImage(imageid);
-					var texture=new GLGE.Texture(textureImage);
-					returnMaterial.addTexture(texture);
-					returnMaterial.addMaterialLayer(new GLGE.MaterialLayer(texture,GLGE.M_NOR,GLGE.UV1));
+					this.createMaterialLayer(child,returnMaterial,common,GLGE.M_NOR);
 					break;
 			}
 		}while(child=child.nextSibling);
@@ -448,18 +476,14 @@ GLGE.Collada.prototype.getMaterial=function(id){
 					if(parseFloat(child.firstChild.nodeValue)>1) returnMaterial.setShininess(parseFloat(child.firstChild.nodeValue));
 						else  returnMaterial.setShininess(parseFloat(child.firstChild.nodeValue)*128);
 					break;
-                case "param":
-                    var value=parseFloat(this.getFloat(common,child.getAttribute("ref")));
+				case "param":
+					var value=parseFloat(this.getFloat(common,child.getAttribute("ref")));
 					if(value>1) returnMaterial.setShininess(value);
 						else    returnMaterial.setShininess(value*128);
-                    break;
+					break;
                 // MCB: texture is invalid here. should remove this case.
 				case "texture":
-					var imageid=this.getSurface(common,this.getSampler(common,child.getAttribute("texture")));
-					textureImage=this.getImage(imageid);
-					var texture=new GLGE.Texture(textureImage);
-					returnMaterial.addTexture(texture);
-					returnMaterial.addMaterialLayer(new GLGE.MaterialLayer(texture,GLGE.M_SHINE,GLGE.UV1));
+					this.createMaterialLayer(child,returnMaterial,common,GLGE.M_SHINE);
 					break;
 			}
 		}while(child=child.nextSibling);
@@ -476,33 +500,30 @@ GLGE.Collada.prototype.getMaterial=function(id){
 					color=child.firstChild.nodeValue.split(" ");
 					returnMaterial.setSpecularColor({r:color[0],g:color[1],b:color[2]});
 					break;
-                case "param":
-                    color=this.getFloat4(common,child.getAttribute("ref")).split(" ");
+				case "param":
+					color=this.getFloat4(common,child.getAttribute("ref")).split(" ");
 					returnMaterial.setSpecularColor({r:color[0],g:color[1],b:color[2]});
-                    break;
+					break;
 				case "texture":
-					var imageid=this.getSurface(common,this.getSampler(common,child.getAttribute("texture")));
-					textureImage=this.getImage(imageid);
-					var texture=new GLGE.Texture(textureImage);
-					returnMaterial.addTexture(texture);
-					returnMaterial.addMaterialLayer(new GLGE.MaterialLayer(texture,GLGE.M_SPECCOLOR,GLGE.UV1));
+					this.createMaterialLayer(child,returnMaterial,common,GLGE.M_SPECCOLOR);
 					break;
 			}
 		}while(child=child.nextSibling);
 	}
 
 	//do reflectivity
+	/*
 	var reflectivity=technique.getElementsByTagName("reflectivity");
 	if(reflectivity.length>0){
 		child=reflectivity[0].firstChild;
 		do{
 			switch(child.tagName){
 				case "float":
-					returnMaterial.setReflectivity(parseFloat(child.firstChild.nodeValue))
+					//returnMaterial.setReflectivity(parseFloat(child.firstChild.nodeValue))
 					break;
-                case "param":
-                    returnMaterial.setReflectivity(parseFloat(this.getFloat(common,child.getAttribute("ref"))));
-                    break;
+				case "param":
+					//returnMaterial.setReflectivity(parseFloat(this.getFloat(common,child.getAttribute("ref"))));
+					break;
                 // MCB: texture is invalid here. should remove this case.
 				case "texture":
 					var imageid=this.getSurface(common,this.getSampler(common,child.getAttribute("texture")));
@@ -510,6 +531,27 @@ GLGE.Collada.prototype.getMaterial=function(id){
 					var texture=new GLGE.Texture(textureImage);
 					returnMaterial.addTexture(texture);
 					returnMaterial.addMaterialLayer(new GLGE.MaterialLayer(texture,GLGE.M_REFLECT,GLGE.UV1));
+					break;
+			}
+		}while(child=child.nextSibling);
+	}*/
+	
+	//do emission color
+	var emission=technique.getElementsByTagName("emission");
+	if(emission.length>0){
+		child=emission[0].firstChild;
+		do{
+			switch(child.tagName){
+				case "color":
+					color=child.firstChild.nodeValue.split(" ");
+					returnMaterial.setEmit(color[0]);
+					break;
+				case "param":
+					color=this.getFloat4(common,child.getAttribute("ref")).split(" ");
+					returnMaterial.setEmit(color[0]);
+					break;
+				case "texture":
+					this.createMaterialLayer(child,returnMaterial,common,GLGE.M_EMIT);
 					break;
 			}
 		}while(child=child.nextSibling);
@@ -523,18 +565,14 @@ GLGE.Collada.prototype.getMaterial=function(id){
 			switch(child.tagName){
 				case "color":
 					color=child.firstChild.nodeValue.split(" ");
-//TODO					returnMaterial.setReflectiveColor({r:color[0],g:color[1],b:color[2]});
+//TODO				returnMaterial.setReflectiveColor({r:color[0],g:color[1],b:color[2]});
 					break;
-                case "param":
-                    color=this.getFloat4(common,child.getAttribute("ref")).split(" ");
-//TODO					returnMaterial.setReflectiveColor({r:color[0],g:color[1],b:color[2]});
-                    break;
+				case "param":
+					color=this.getFloat4(common,child.getAttribute("ref")).split(" ");
+//TODO				returnMaterial.setReflectiveColor({r:color[0],g:color[1],b:color[2]});
+					break;
 				case "texture":
-					var imageid=this.getSurface(common,this.getSampler(common,child.getAttribute("texture")));
-					textureImage=this.getImage(imageid);
-					var texture=new GLGE.Texture(textureImage);
-					returnMaterial.addTexture(texture);
-					returnMaterial.addMaterialLayer(new GLGE.MaterialLayer(texture,GLGE.M_REFLECT,GLGE.UV1));
+					this.createMaterialLayer(child,returnMaterial,common,GLGE.M_REFLECT);
 					break;
 			}
 		}while(child=child.nextSibling);
@@ -547,11 +585,11 @@ GLGE.Collada.prototype.getMaterial=function(id){
 		do{
 			switch(child.tagName){
 				case "float":
-//TODO					returnMaterial.setTransparency(parseFloat(child.firstChild.nodeValue))
+//TODO				returnMaterial.setTransparency(parseFloat(child.firstChild.nodeValue))
 					break;
-                case "param":
-//TODO                    returnMaterial.setTransparency(parseFloat(this.getFloat(common,child.getAttribute("ref"))));
-                    break;
+				case "param":
+//TODO                    	returnMaterial.setTransparency(parseFloat(this.getFloat(common,child.getAttribute("ref"))));
+					break;
 			}
 		}while(child=child.nextSibling);
 	}
@@ -575,29 +613,25 @@ GLGE.Collada.prototype.getMaterial=function(id){
 					break;
 				case "color":
 					color=child.firstChild.nodeValue.split(" ");
-                    var alpha=this.getMaterialAlpha(color,opaque,1);
-//TODO                    var alpha=this.getMaterialAlpha(color,opaque,returnMaterial.getTransparency());
-                    if(alpha<1){
-                        returnMaterial.setAlpha(alpha);
-                        returnMaterial.trans=true;
-                    }
+					var alpha=this.getMaterialAlpha(color,opaque,1);
+//TODO                    	var alpha=this.getMaterialAlpha(color,opaque,returnMaterial.getTransparency());
+					if(alpha<1){
+						returnMaterial.setAlpha(alpha);
+						returnMaterial.trans=true;
+					}
 					break;
 				case "param":
-                    color=this.getFloat4(common,child.getAttribute("ref")).split(" ");
-                    var alpha=this.getMaterialAlpha(color,opaque,1);
-//TODO                    var alpha=this.getMaterialAlpha(color,opaque,returnMaterial.getTransparency());
-                    if(alpha<1){
-                        returnMaterial.setAlpha(alpha);
-                        returnMaterial.trans=true;
-                    }
+					color=this.getFloat4(common,child.getAttribute("ref")).split(" ");
+					var alpha=this.getMaterialAlpha(color,opaque,1);
+//TODO                    	var alpha=this.getMaterialAlpha(color,opaque,returnMaterial.getTransparency());
+					if(alpha<1){
+						returnMaterial.setAlpha(alpha);
+						returnMaterial.trans=true;
+					}
 					break;
                 // MCB: this case assumes opaque="A_ONE" and transparency="1.0"
 				case "texture":
-					var imageid=this.getSurface(common,this.getSampler(common,child.getAttribute("texture")));
-					textureImage=this.getImage(imageid);
-					var texture=new GLGE.Texture(textureImage);
-					returnMaterial.addTexture(texture);
-					returnMaterial.addMaterialLayer(new GLGE.MaterialLayer(texture,GLGE.M_ALPHA,GLGE.UV1));
+					this.createMaterialLayer(child,returnMaterial,common,GLGE.M_ALPHA);
 					returnMaterial.trans=true;
 					break;
 			}
@@ -666,49 +700,498 @@ GLGE.Collada.prototype.getInstanceGeometry=function(node){
 	}
 	return obj;
 }
+
+
+/**
+* creates an array of animation curves
+* @param {string} id the id of the sampler
+* @private
+*/
+GLGE.Collada.prototype.getAnimationSampler=function(id){
+	var frameRate=30;
+	var inputs=this.xml.getElementById(id).getElementsByTagName("input");
+	var outputData={};
+	var inputsArray=[];
+	var data,block;
+	for(var i=0;i<inputs.length;i++){
+		//modify get source to return the array and element length
+		data=this.getSource(inputs[i].getAttribute("source").substr(1));
+		block=inputs[i].getAttribute("semantic");
+		inputsArray.push({block:block,data:data});
+	}
+	for(n=0;n<inputsArray.length;n++){
+		block=inputsArray[n].block;
+		outputData[block]={};
+		outputData[block].data=[];
+		outputData[block].names=[];
+		for(k=0;k<inputsArray[n].data.array.length;k=k+inputsArray[n].data.stride){
+				pcnt=0;
+			for(i=0;i<inputsArray[n].data.pmask.length;i++){
+				if(inputsArray[n].data.pmask[i]){
+					outputData[block].names.push(inputsArray[n].data.pmask[i].name);
+					if(inputsArray[n].data.pmask[i].type=="float4x4"){
+						outputData[block].stride=16;
+						for(j=0;j<16;j++){
+							outputData[block].data.push(inputsArray[n].data.array[j+k+inputsArray[n].data.offset+i]);
+						}
+					}else{
+						pcnt++;
+						outputData[block].stride=pcnt;
+						outputData[block].data.push(inputsArray[n].data.array[k+inputsArray[n].data.offset+i]);
+					}
+				}
+			}
+		}
+	}
+
+	//this should return an array of curves
+	var point;
+	var anim=[];
+	for(var i=0; i<outputData["OUTPUT"].stride;i++){
+		anim.push(new GLGE.AnimationCurve());
+	}
+	for(var i=0;i<outputData["INPUT"].data.length;i++){
+		for(var j=0;j<outputData["OUTPUT"].stride;j++){
+			anim[j].name=outputData["OUTPUT"].names[j];
+			if(outputData["INTERPOLATION"].data[i]=="LINEAR"){
+				point=new GLGE.LinearPoint();
+				point.setX(outputData["INPUT"].data[i]*frameRate);
+				point.setY(outputData["OUTPUT"].data[i*outputData["OUTPUT"].stride+j]);
+				anim[j].addPoint(point);
+			}
+			
+			if(outputData["INTERPOLATION"].data[i]=="BEZIER"){
+				point=new GLGE.BezTriple();
+				point.setX1(outputData["IN_TANGENT"].data[(i*outputData["OUTPUT"].stride+j)*2]*frameRate);
+				point.setY1(outputData["IN_TANGENT"].data[(i*outputData["OUTPUT"].stride+j)*2+1]);
+				point.setX2(Math.round(outputData["INPUT"].data[i]*frameRate));
+				point.setY2(outputData["OUTPUT"].data[i*outputData["OUTPUT"].stride+j]);
+				point.setX3(outputData["OUT_TANGENT"].data[(i*outputData["OUTPUT"].stride+j)*2]*frameRate);
+				point.setY3(outputData["OUT_TANGENT"].data[(i*outputData["OUTPUT"].stride+j)*2+1]);
+				anim[j].addPoint(point);			
+			}
+		}
+	}
+	return anim;
+}
+
+/**
+* Gets the animation vector for a node
+* @param {object} channels the animation channels effecting this node
+* @private
+*/
+GLGE.Collada.prototype.getAnimationVector=function(channels){
+	//I can see no nice way to map a seuqnce of animated transforms onto a single transform 
+	//so instead calc transform for each frame then use quat and trans then linear between them
+	var maxFrame=0;
+	//get the initial state of the target
+	var targetNode=this.xml.getElementById(channels[0].target[0]);
+	//get the initial transforms for the target node
+	var child=targetNode.firstChild;
+	var transforms=[];
+	var sids={};
+	do{
+		switch(child.tagName){
+			case "matrix":
+			case "translate":
+			case "rotate":
+			case "scale":
+				def={type:child.tagName,data:this.parseArray(child),animations:[]};
+				if(child.hasAttribute("sid")) sids[child.getAttribute("sid")]=def;
+				transforms.push(def);
+				break;
+		}
+		child=child.nextSibling
+	}while(child);
+	//loop though the animation channels effecting this node
+	var anim={};
+	for(var i=0;i<channels.length;i++){
+		var animcurves=this.getAnimationSampler(channels[i].source);
+		for(j=0;j<animcurves.length;j++){
+			maxFrame=Math.max(maxFrame,animcurves[j].keyFrames[animcurves[j].keyFrames.length-1].x);
+		}
+		var target=channels[i].target;
+		if(target[1].indexOf(".")!=-1){
+			var splittarget=target[1].split(".");
+			switch(splittarget[1]){
+				case "X":
+					sids[splittarget[0]].animations[0]=animcurves[0];
+					break;
+				case "Y":
+					sids[splittarget[0]].animations[1]=animcurves[0];
+					break;
+				case "Z":
+					sids[splittarget[0]].animations[2]=animcurves[0];
+					break;
+				case "ANGLE":
+					sids[splittarget[0]].animations[3]=animcurves[0];
+					break;
+			}
+		}else if(target[1].indexOf("(")!=-1){
+			//do bracket type
+			var idx=target[1].split("(");
+			sidtarget=idx.shift();
+			if(idx.length>1) idx=parseInt(idx[0])+4*parseInt(idx[1]);
+				else idx=parseInt(idx[0]);
+			sids[sidtarget].animations[idx]=animcurves[0];
+		}else{
+			//do all
+			for(var j=0;j<animcurves.length;j++){
+				switch(animcurves[j].name){
+					case "X":
+						sids[target[1]].animations[0]=animcurves[j];
+						break;
+					case "Y":
+						sids[target[1]].animations[1]=animcurves[j];
+						break;
+					case "Z":
+						sids[target[1]].animations[2]=animcurves[j];
+						break;
+					case "ANGLE":
+						sids[target[1]].animations[3]=animcurves[j];
+						break;
+					default:
+						sids[target[1]].animations[j]=animcurves[j];
+						break;
+				}
+			}
+		}
+	
+	}
+	var animVector=new GLGE.AnimationVector();
+	animVector.setFrames(maxFrame);
+	var quatxcurve=new GLGE.AnimationCurve();
+	var quatycurve=new GLGE.AnimationCurve();
+	var quatzcurve=new GLGE.AnimationCurve();
+	var quatwcurve=new GLGE.AnimationCurve();
+	var locxcurve=new GLGE.AnimationCurve();
+	var locycurve=new GLGE.AnimationCurve();
+	var loczcurve=new GLGE.AnimationCurve();
+	animVector.addCurve("QuatX",quatxcurve);
+	animVector.addCurve("QuatY",quatycurve);
+	animVector.addCurve("QuatZ",quatzcurve);
+	animVector.addCurve("QuatW",quatwcurve);
+	animVector.addCurve("LocX",locxcurve);
+	animVector.addCurve("LocY",locycurve);
+	animVector.addCurve("LocZ",loczcurve);
+	var lastQuat=null;
+	for(var frame=0; frame<maxFrame;frame++){
+		var matrix=GLGE.identMatrix();
+		for(var i=0;i<transforms.length;i++){
+			//get full transform for this frame
+			switch(transforms[i].type){
+				case "matrix":
+					var matrix_array=[
+						(transforms[i].animations[0] ? transforms[i].animations[0].getValue(frame) : transforms[i].data[0]),
+						(transforms[i].animations[1] ? transforms[i].animations[1].getValue(frame) : transforms[i].data[1]),
+						(transforms[i].animations[2] ? transforms[i].animations[2].getValue(frame) : transforms[i].data[2]),
+						(transforms[i].animations[3] ? transforms[i].animations[3].getValue(frame) : transforms[i].data[3]),
+						(transforms[i].animations[4] ? transforms[i].animations[4].getValue(frame) : transforms[i].data[4]),
+						(transforms[i].animations[5] ? transforms[i].animations[5].getValue(frame) : transforms[i].data[5]),
+						(transforms[i].animations[6] ? transforms[i].animations[6].getValue(frame) : transforms[i].data[6]),
+						(transforms[i].animations[7] ? transforms[i].animations[7].getValue(frame) : transforms[i].data[7]),
+						(transforms[i].animations[8] ? transforms[i].animations[8].getValue(frame) : transforms[i].data[8]),
+						(transforms[i].animations[9] ? transforms[i].animations[9].getValue(frame) : transforms[i].data[9]),
+						(transforms[i].animations[10] ? transforms[i].animations[10].getValue(frame) : transforms[i].data[10]),
+						(transforms[i].animations[11] ? transforms[i].animations[11].getValue(frame) : transforms[i].data[11]),
+						(transforms[i].animations[12] ? transforms[i].animations[12].getValue(frame) : transforms[i].data[12]),
+						(transforms[i].animations[13] ? transforms[i].animations[13].getValue(frame) : transforms[i].data[13]),
+						(transforms[i].animations[14] ? transforms[i].animations[14].getValue(frame) : transforms[i].data[14]),
+						(transforms[i].animations[15] ? transforms[i].animations[15].getValue(frame) : transforms[i].data[15])
+					];
+					matrix=GLGE.mulMat4(matrix,GLGE.Mat4(matrix_array));
+					break;
+				case "rotate":
+					var rotate_array=[
+						(transforms[i].animations[0] ? transforms[i].animations[0].getValue(frame) : transforms[i].data[0]),
+						(transforms[i].animations[1] ? transforms[i].animations[1].getValue(frame) : transforms[i].data[1]),
+						(transforms[i].animations[2] ? transforms[i].animations[2].getValue(frame) : transforms[i].data[2]),
+						(transforms[i].animations[3] ? transforms[i].animations[3].getValue(frame) : transforms[i].data[3])
+					];
+					matrix=GLGE.mulMat4(matrix,GLGE.angleAxis(rotate_array[3]*0.017453278,[ rotate_array[0], rotate_array[1], rotate_array[2]]));
+					break;
+				case "translate":
+					var translate_array=[
+						(transforms[i].animations[0] ? transforms[i].animations[0].getValue(frame) : transforms[i].data[0]),
+						(transforms[i].animations[1] ? transforms[i].animations[1].getValue(frame) : transforms[i].data[1]),
+						(transforms[i].animations[2] ? transforms[i].animations[2].getValue(frame) : transforms[i].data[2])
+					];
+					matrix=GLGE.mulMat4(matrix,GLGE.translateMatrix(translate_array[0],translate_array[1],translate_array[2]));
+					break;
+				case "scale":
+					var scale_array=[
+						(transforms[i].animations[0] ? transforms[i].animations[0].getValue(frame) : transforms[i].data[0]),
+						(transforms[i].animations[1] ? transforms[i].animations[1].getValue(frame) : transforms[i].data[1]),
+						(transforms[i].animations[2] ? transforms[i].animations[2].getValue(frame) : transforms[i].data[2])
+					];
+					matrix=GLGE.mulMat4(matrix,GLGE.scaleMatrix(scale_array[0],scale_array[1],scale_array[2]));
+					break;
+			}
+		}
+		scale=GLGE.matrix2Scale(matrix);
+		matrix=GLGE.mulMat4(matrix,GLGE.scaleMatrix(1/scale[0],1/scale[1],1/scale[2]));
+		//convert to quat and trans and add to the curve
+		quat=GLGE.rotationMatrix2Quat(matrix);
+		if(lastQuat){
+			//make sure we are in the same range as previous!
+			if(lastQuat[0]*quat[0]+lastQuat[1]*quat[1]+lastQuat[2]*quat[2]+lastQuat[3]*quat[3]<0){
+				quat[0]=quat[0]*-1;
+				quat[1]=quat[1]*-1;
+				quat[2]=quat[2]*-1;
+				quat[3]=quat[3]*-1;
+			}
+		}
+		lastQuat=quat;
+		point=new GLGE.LinearPoint();
+		point.setX(frame);
+		point.setY(quat[0]);
+		quatxcurve.addPoint(point);
+		point=new GLGE.LinearPoint();
+		point.setX(frame);
+		point.setY(quat[1]);
+		quatycurve.addPoint(point);
+		point=new GLGE.LinearPoint();
+		point.setX(frame);
+		point.setY(quat[2]);
+		quatzcurve.addPoint(point);
+		point=new GLGE.LinearPoint();
+		point.setX(frame);
+		point.setY(quat[3]);
+		quatwcurve.addPoint(point);
+		point=new GLGE.LinearPoint();
+		point.setX(frame);
+		point.setY(matrix.e(1,4));
+		locxcurve.addPoint(point);
+		point=new GLGE.LinearPoint();
+		point.setX(frame);
+		point.setY(matrix.e(2,4));
+		locycurve.addPoint(point);
+		point=new GLGE.LinearPoint();
+		point.setX(frame);
+		point.setY(matrix.e(3,4));
+		loczcurve.addPoint(point);
+	}
+	//return the animation vector
+	targetNode.GLGEObject.setAnimation(animVector);
+	targetNode.GLGEObject.animationStart=0;
+	targetNode.GLGEObject.setFrameRate(30);
+	return animVector;
+}
+/**
+* creates an action form the intially animation within the document
+* @private
+*/
+GLGE.Collada.prototype.getAnimations=function(){
+	var action=new GLGE.Action();
+	var animations=this.xml.getElementsByTagName("animation");
+	var channels,target,source;
+	var channelGroups={};
+	for(var i=0;i<animations.length;i++){
+		channels=animations[i].getElementsByTagName("channel");
+		for(var j=0;j<channels.length;j++){
+			var target=channels[j].getAttribute("target").split("/");
+			source=channels[j].getAttribute("source").substr(1);
+			if(!channelGroups[target[0]]) channelGroups[target[0]]=[];
+			channelGroups[target[0]].push({source:source,target:target});
+		}
+	}
+	for(target in channelGroups){
+		//create an animation vector for this target
+		this.getAnimationVector(channelGroups[target]);
+	}
+}
+/**
+* creates a GLGE Object from a given instance controler
+* @param {node} node the element to parse
+* @private
+*/
+GLGE.Collada.prototype.getInstanceController=function(node){
+	var obj=new GLGE.Object();
+	var controller=this.xml.getElementById(node.getAttribute("url").substr(1));
+	var skeletons=node.getElementsByTagName("skeleton");
+	var joints=controller.getElementsByTagName("joints")[0];
+	var inputs=joints.getElementsByTagName("input");
+	var bindShapeMatrix=this.parseArray(controller.getElementsByTagName("bind_shape_matrix")[0]);
+
+	var inverseBindMatrix=[bindShapeMatrix];
+	var joints=[new GLGE.Group()];
+	var mat;
+	for(var i=0; i<inputs.length;i++){
+		//TODO: sort out correct use of accessors for these source
+		if(inputs[i].getAttribute("semantic")=="INV_BIND_MATRIX"){
+			var matrixdata=this.getSource(inputs[i].getAttribute("source").substr(1));
+			for(var k=0;k<matrixdata.array.length;k=k+matrixdata.stride){
+				mat=matrixdata.array.slice(k,k+16);
+				inverseBindMatrix.push(GLGE.mulMat4(GLGE.Mat4(mat),GLGE.Mat4(bindShapeMatrix)));
+			}
+		}
+		if(inputs[i].getAttribute("semantic")=="JOINT"){
+			var jointdata=this.getSource(inputs[i].getAttribute("source").substr(1));
+			if(jointdata.type=="IDREF_array"){
+				for(var k=0;k<jointdata.array.length;k=k+jointdata.stride){
+					joints.push(this.getNode(this.xml.getElementById(jointdata.array[k])));
+				}
+			}else if(jointdata.type=="Name_array"){
+				var sidArray={};
+				var sid;
+				for(var n=0; n<skeletons.length;n++){
+					var skeletonElement=this.xml.getElementById(skeletons[n].firstChild.nodeValue.substr(1));
+					sid=skeletonElement.getAttribute("sid");
+					if(sid) sidArray[sid]=skeletonElement;
+					var elements=skeletonElement.getElementsByTagName("*");
+					for(k=0; k<elements.length;k++){
+						sid=elements[k].getAttribute("sid");
+						if(sid){
+							sidArray[sid]=elements[k];
+						}
+					}
+				}
+				for(var k=0;k<jointdata.array.length;k=k+jointdata.stride){
+					joints.push(this.getNode(sidArray[jointdata.array[k]]));
+				}
+			}
+
+		}
+	}
+	
+	//go though the inputs to get the data layout
+	var vertexWeight=controller.getElementsByTagName("vertex_weights")[0]
+	inputs=vertexWeight.getElementsByTagName("input");
+	inputArray=[];
+	outputData={};
+	for(n=0;n<inputs.length;n++){
+		block=inputs[n].getAttribute("semantic");
+		inputs[n].data=this.getSource(inputs[n].getAttribute("source").substr(1));
+		inputs[n].block=block;
+		outputData[block]=[];
+		inputArray[inputs[n].getAttribute("offset")]=inputs[n];
+	}
+	
+	var vcounts=this.parseArray(vertexWeight.getElementsByTagName("vcount")[0]);
+
+	var vs=this.parseArray(vertexWeight.getElementsByTagName("v")[0]);
+	//find the maximum vcount
+	var maxJoints=0;
+	for(var i=0; i<vcounts.length;i++) if(vcounts[i]) maxJoints=Math.max(maxJoints,parseInt(vcounts[i]));
+	vPointer=0;
+	var block;
+	for(var i=0; i<vcounts.length;i++){
+		for(var j=0; j<vcounts[i];j++){
+			for(var k=0; k<inputArray.length;k++){
+				block=inputArray[k].block;
+				for(n=0;n<inputArray[k].data.stride;n++){
+					if(inputArray[k].data.pmask[n]){
+						if(block!="JOINT") outputData[block].push(inputArray[k].data.array[parseInt(vs[vPointer])+parseInt(inputArray[k].data.offset)]);
+							else outputData[block].push(parseInt(vs[vPointer]));						
+						vPointer++;
+						
+					}
+				}
+			}
+		}
+		//pad out the remaining data
+		for(j=j; j<maxJoints;j++){
+			for(var k=0; k<inputArray.length;k++){
+				block=inputArray[k].block;
+				outputData[block].push(0);
+			}
+		}
+	}	
+
+	//remove any -1 joints, not sure if this is a bug in blender??
+	for(var i=0;i<outputData["JOINT"].length;i++){
+			outputData["JOINT"][i]++;
+	}
+	
+	var skeletonData={vertexJoints:outputData["JOINT"],vertexWeight:outputData["WEIGHT"],joints:joints,inverseBindMatrix:inverseBindMatrix,count:maxJoints}
+	
+
+		
+	var meshes=this.getMeshes(controller.getElementsByTagName("skin")[0].getAttribute("source").substr(1),skeletonData);
+	//var meshes=this.getMeshes(controller.getElementsByTagName("skin")[0].getAttribute("source").substr(1));
+	var materials=node.getElementsByTagName("instance_material");
+	var objMaterials={};
+	for(var i=0; i<materials.length;i++){
+		mat=this.getMaterial(materials[i].getAttribute("target").substr(1));
+		objMaterials[materials[i].getAttribute("symbol")]=mat;
+	}
+	//create GLGE object
+	for(i=0; i<meshes.length;i++){
+		var multimat=new GLGE.MultiMaterial();
+		multimat.setMesh(meshes[i]);
+		if(objMaterials[meshes[i].matName]){
+			if(objMaterials[meshes[i].matName].trans){
+				obj.setZtransparent(true);
+			}
+			multimat.setMaterial(objMaterials[meshes[i].matName]);
+		}else{
+			var material=new GLGE.Material();
+			multimat.setMaterial(material);
+		}
+		obj.addMultiMaterial(multimat);
+	}
+	return obj;
+}
+
 /**
 * Creates a new group and parses it's children
 * @param {DOM Element} node the element to parse
 * @private
 */
 GLGE.Collada.prototype.getNode=function(node){
-	var newGroup=new GLGE.Group();
-	var child=node.firstChild;
-	var matrix=GLGE.identMatrix();
-	var data;
-	do{
-		switch(child.tagName){
-			case "node":
-				newGroup.addGroup(this.getNode(child));
-				break;
-			case "instance_node":
-				newGroup.addGroup(this.getNode(this.xml.getElementById(child.getAttribute("url").substr(1))));
-				break;
-			case "instance_visual_scene":
-				newGroup.addGroup(this.getNode(this.xml.getElementById(child.getAttribute("url").substr(1))));
-				break;
-			case "instance_geometry":
-				newGroup.addObject(this.getInstanceGeometry(child));
-				break;
-			case "matrix":
-				matrix=new GLGE.Mat(this.parseArray(child));
-				break;
-			case "translate":
-				data=this.parseArray(child);
-				matrix=matrix.x(GLGE.translateMatrix(data[0],data[1],data[2]));
-				break;
-			case "rotate":
-				data=this.parseArray(child);
-				matrix=matrix.x(GLGE.angleAxis(data[3]*0.017453278,[data[0],data[1],data[2]]));
-				break;
-		}
-	}while(child=child.nextSibling);
-	newGroup.setLoc(matrix.data[3],matrix.data[7],matrix.data[11]);
-	newGroup.setRotMatrix(new GLGE.Mat([matrix.data[0], matrix.data[1], matrix.data[2], 0,
-								matrix.data[4], matrix.data[5], matrix.data[6], 0,
-								matrix.data[8], matrix.data[9], matrix.data[10], 0,
-								0, 0, 0, 1]));
-	return newGroup;
+	if(node.GLGEObject){
+		return node.GLGEObject;
+	}else{
+		var newGroup=new GLGE.Group(node.getAttribute("id"));
+		//newGroup.setAnimation(testanim);
+		node.GLGEObject=newGroup; //map Collada DOM to GLGE
+		var child=node.firstChild;
+		var matrix=GLGE.identMatrix();
+		var data;
+		do{
+			switch(child.tagName){
+				case "node":
+					newGroup.addGroup(this.getNode(child));
+					break;
+				case "instance_node":
+					newGroup.addGroup(this.getNode(this.xml.getElementById(child.getAttribute("url").substr(1))));
+					break;
+				case "instance_visual_scene":
+					newGroup.addGroup(this.getNode(this.xml.getElementById(child.getAttribute("url").substr(1))));
+					break;
+				case "instance_geometry":
+					newGroup.addObject(this.getInstanceGeometry(child));
+					break;
+				case "instance_controller":
+					newGroup.addObject(this.getInstanceController(child));
+					break;
+				case "matrix":
+					matrix=this.parseArray(child);
+					break;
+				case "translate":
+					data=this.parseArray(child);
+					matrix=GLGE.mulMat4(matrix,GLGE.translateMatrix(data[0],data[1],data[2]));
+					break;
+				case "rotate":
+					data=this.parseArray(child);
+					matrix=GLGE.mulMat4(matrix,GLGE.angleAxis(data[3]*0.017453278,[data[0],data[1],data[2]]));
+					break;
+				case "scale":
+					data=this.parseArray(child);
+					matrix=GLGE.mulMat4(matrix,GLGE.scaleMatrix(data[0],data[1],data[2]));
+					break;
+			}
+		}while(child=child.nextSibling);
+		
+		newGroup.setLoc(matrix[3],matrix[7],matrix[11]);
+		var mat=GLGE.Mat4([matrix[0], matrix[1], matrix[2], 0,
+									matrix[4], matrix[5], matrix[6], 0,
+									matrix[8], matrix[9], matrix[10], 0,
+									0, 0, 0, 1]);
+					
+		newGroup.setRotMatrix(mat);
+		return newGroup;
+	}
 };
 /**
 * Initializes the Object/Scene when the collada document has been loaded
@@ -741,6 +1224,7 @@ GLGE.Collada.prototype.loaded=function(url,xml){
 	GLGE.ColladaDocuments[url]=xml; //cache the document
 	this.xml=xml;
 	this.initVisualScene();
+	this.getAnimations();
 };
 
 GLGE.Scene.prototype.addCollada=GLGE.Scene.prototype.addGroup;
