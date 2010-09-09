@@ -5463,7 +5463,7 @@ GLGE.TextureCanvas.prototype.updateCanvas=function(gl){
 	catch(e){gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas,null);}
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-	//gl.generateMipmap(gl.TEXTURE_2D);
+	gl.generateMipmap(gl.TEXTURE_2D);
 }
 
 
@@ -5566,7 +5566,7 @@ GLGE.TextureVideo.prototype.updateTexture=function(gl){
 	catch(e){gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.canvas,null);}
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-	//gl.generateMipmap(gl.TEXTURE_2D);
+	gl.generateMipmap(gl.TEXTURE_2D);
 	
 	/*
 	use when video is working in webkit
@@ -5922,7 +5922,7 @@ GLGE.TextureCube.prototype.doTexture=function(gl){
 		gl.texImage2D(gl.TEXTURE_CUBE_MAP_NEGATIVE_Y, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.negY);
 		gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_Z, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.posZ);
 		gl.texImage2D(gl.TEXTURE_CUBE_MAP_NEGATIVE_Z, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.negZ);
-		//gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+		gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
 		gl.bindTexture(gl.TEXTURE_CUBE_MAP, null);
 		this.state=1;
 	}
@@ -7195,7 +7195,7 @@ GLGE.Material.prototype.textureUniforms=function(gl,shaderProgram,lights,object)
 			gl.bindTexture(gl.TEXTURE_2D, lights[i].texture);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-			//gl.generateMipmap(gl.TEXTURE_2D);
+			gl.generateMipmap(gl.TEXTURE_2D);
 		    
 			gl.uniform1i(GLGE.getUniformLocation(gl,shaderProgram, "TEXTURE"+num), num);
 		}
